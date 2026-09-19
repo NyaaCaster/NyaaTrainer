@@ -90,3 +90,41 @@ Player +0x1B8 → PlayerSexualArousalManager
 | XML 里裸 `<` / `&` | 会让 LuaScript **静默不执行**；条件写 `>` 形式，位运算改取模 |
 | `mono_class_findInstancesOfClass` 返回 nil | 采集器状态不健康时静默失败，重新注入再试 |
 | `mono_object_getClass` 假阳性 | 对任意地址都返回字符串，必须严格校验类名 |
+
+## 锁定功能的两条关键经验（本项目实测代价最大）
+
+### 1. 锁定只能有一个入口
+
+本项目一度同时提供两个性快感锁定入口：行内 `□` 按钮（设 `LOCKS.Arouse`）与
+底部「快感锁定50%」按钮（设 `AROUSE_LOCK`）。结果：
+
+- 用**行内 `□`** 锁定时，通用重设循环用**写内存**的方式处理它 ——
+  而性快感**必须调 `Set()` 方法**才有效 → **看起来锁了、实际没锁**
+- 前者设的变量在后者路径里不被识别 → **两条路各自为政**
+
+**结论**：锁定只保留**每个数值条目自己的按钮**这一个入口；
+底部快捷区**只放一次性动作**。已作为模板约定写进
+`docs/03-standalone-trainer.md` §4.5.1。
+
+### 2. 需要"调方法"的数值要排除出通用写内存循环
+
+```lua
+for i = 1, #WANT do
+  local k = WANT[i].key
+  -- ★ 必须排除！否则通用循环会把无效的写操作当成"已在处理"
+  if k ~= 'Arouse' and LOCKS[k] and ADDR[k] and LOCKVAL[k] then
+    ...通用写内存...
+  end
+end
+-- 该项走自己的正规重设路径
+if LOCKS.Arouse and LOCKVAL.Arouse then setArouse(LOCKVAL.Arouse) end
+```
+
+### 3. 定时器线程的管道问题
+
+CE 的**定时器回调可能跑在没有 Mono 管道的线程**上。
+早期 `pipeOK()` 是"没管道就返回 false"，导致**定时器里的周期重设永远静默失败** ——
+而手动点按钮（另一线程）却正常。
+
+**正解**：`pipeOK()` 发现本线程无管道时**主动调 `getMonoPipe()` 建立**，
+断线时销毁重建。详见 `docs/01-mono-recon.md` §8.4。

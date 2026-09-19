@@ -352,6 +352,10 @@ end
 | **AOB 特征依赖具体数值** | 用 `maxHealth/healthCap/...` 的绝对值做特征，玩家一升级（35→39）就失配 | 优先用**类名 + 字段偏移**；必须用 AOB 时挑与玩家进度无关的稳定字节 |
 | **`getScreenWidth()` / `MainForm.Width` 当屏幕宽度** | 面板被压到标签截断（实测一个返回物理像素、一个是 CE 主窗口尺寸，跨会话还不同） | 面板宽度**由内容决定 + 固定上限**，并给名字列设**保底宽度**；详见 `CE独立修改器方法.md` |
 | **Lua 脚本里写裸 `<` 或 `&`** | `.CT` 加载成功但 LuaScript **静默不执行**；或 XML 解析器报 `invalid token` | 条件写成 `>` 形式；位运算改取模/取整（`v % 256; v = floor(v/256)`）。**注释里的裸字符同样会坏事** |
+| **`pipOK()` 在定时器线程失败** | 手动调方法有效，**定时器里的周期重设永远静默失败** | `mono_invoke_method` 的管道是**按线程缓存**的（`libmono.monopipes[getCurrentThreadID()]`），而**CE 定时器回调可能跑在没有管道的线程上**。正解：`pipeOK()` 发现本线程无管道时**主动调 `getMonoPipe()` 建立**，而不是直接返回 false —— 见 §8.4 |
+| **同一数值有多个锁定入口** | 一个入口能锁、另一个入口"锁定中却没人重设" | 同行内 `□` 与实际数值锁定是两个变量时，两条路各自为政。**锁定必须只有一个入口**（每个数值条目自己的按钮）；快捷按钮只放一次性动作。详见 `CE独立修改器方法.md` |
+| **Lua table 下标 1-based 与业务值 0-based 错位** | 循环 `for lv = 0, 3` 取 `LV[lv]`，结果**整体错一格**，最后一个值永远取不到 | Lua 数组下标从 **1** 开始。业务值从 0 起时，用**显式映射** `{ [0]='a', [1]='b' }`，不要用数组顺序 |
+| **显示端"锁定中显示目标值"** | 锁定实际失效时界面照样显示目标值，把失败**掩盖**了 | 显示端一律读**真值**；与目标不符时**标红**（或其它显著标记），让失败立刻可见 |
 
 ---
 
@@ -489,16 +493,34 @@ end
 if readInteger(libmono.MDC_ShuttingDownAddress) ~= 0 then return nil end
 ```
 
-所以调用前必须自检：
+所以调用前必须自检。**⚠️ 注意：自检不能只是"没有管道就放弃"** —— 见下面的实测教训。
 
 ```lua
+-- 最终版：检查 + 按需建立 + 断线重建
 local function pipeOK()
   if type(libmono) ~= 'table' then return false, 'libmono missing' end
   if libmono.abort then return false, 'libmono.abort' end
   if readInteger(libmono.MDC_ShuttingDownAddress) ~= 0 then return false, 'shutting down' end
-  local p = libmono.monopipes[getCurrentThreadID()]
-  if p == nil then return false, 'no pipe for thread' end
-  if p.Connected == false then return false, 'pipe disconnected' end
+  if type(libmono.monopipes) ~= 'table' then return false, 'no monopipes' end
+
+  local tid = getCurrentThreadID()
+  local p = libmono.monopipes[tid]
+
+  -- ★ 本线程还没有管道 -> 主动建立（而不是直接放弃）
+  if p == nil and type(getMonoPipe) == 'function' then
+    local ok = pcall(getMonoPipe)          -- getMonoPipe 是全局函数，内部按线程缓存
+    if ok then p = libmono.monopipes[tid] end
+  end
+  if p == nil then return false, 'no pipe for thread ' .. tostring(tid) end
+
+  if p.Connected == false then
+    pcall(function() p.destroy() end)
+    libmono.monopipes[tid] = nil
+    if type(getMonoPipe) == 'function' then pcall(getMonoPipe) end
+    p = libmono.monopipes[tid]
+    if p == nil then return false, 'pipe reconnect failed' end
+    if p.Connected == false then return false, 'pipe still disconnected' end
+  end
   if libmono.monopipe == nil then return false, 'monopipe nil' end
   return true
 end
@@ -508,12 +530,27 @@ local pk, why = pipeOK()
 if not pk then return false, 'pipe not healthy: ' .. tostring(why) end
 ```
 
+**⭐ 实测教训（2026-09-20）：只"检查"不"建立"会漏掉一个重要场景**
+
+场景：用 CE 的**定时器**周期性重设某个数值（如锁定性快感，每 500ms 调一次 `Set`）。
+
+- **手动点按钮能改**（那次调用所在的线程已有管道）
+- **定时器里的周期重设永远静默失败** —— 因为 **CE 的定时器回调可能跑在另一个线程上**，
+  那个线程从没建过管道，早期版本的 `pipeOK()` 直接 `return false` 就放弃了。
+
+症状很隐蔽：日志里只有"点击一次"的记录，**之后没有任何周期性记录**，
+数值看起来"锁了"但实际一路漂移。
+
+**正解就是上面 `pipeOK` 里那句"主动调 `getMonoPipe()` 建立"** —— 建立之后一切正常（实测持续 400+ 次心跳无漂移）。
+
 **配套的保守设计**：
 
 1. **一次只做一个操作** —— 不在一个脚本里连续调用多个托管方法
 2. 需要循环时（如逐级降级），**每一步之间重新检查管道**
 3. 周期性调用（如锁定数值）**间隔不要低于 200ms**，并做**同值限流**
 4. 调用后若 `mono_AttachedProcess` 变 nil，重新 `LaunchMonoDataCollector()` 再继续
+5. **限流的时间戳只在调用成功后更新** —— 早期版本在调用前就更新，导致一次失败会把限流窗口"吃掉"，后续重试被误判成"刚调过"而跳过
+6. **周期性调用的成功/失败都要留痕**（心跳日志）—— 用 `pcall(fn)` 吞掉返回值会让故障变成"日志一片空白"，无从诊断
 
 ### 8.5 ⚠️ 硬规矩：不要手工改托管容器的内部结构
 

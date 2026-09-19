@@ -179,7 +179,27 @@ local FAMILIES = {
   { id = 'masochism',   cn = '受虐倾向', row = nil },
 }
 
+-- 等级显示：0 = 无，1~3 用罗马数字（界面风格统一，也比"设为N"省空间）
+--
+-- ⚠️ 踩过的坑：Lua 的 table 下标从 1 开始，而这里的"等级"从 0 开始。
+--   写成 LV_ROMAN = { '0', 'Ⅰ', 'Ⅱ', 'Ⅲ' } 后按 LV_ROMAN[lv] 取，
+--   当 lv=1 时会拿到 '0' —— **整体错位一格**，第 4 个按钮永远是 'Ⅱ'，
+--   'Ⅲ' 根本显示不出来（用字节级检查才发现的）。
+--   正解：显式按 level 建映射，不用数组下标。
+local LV_ROMAN = { [0] = '0', [1] = 'Ⅰ', [2] = 'Ⅱ', [3] = 'Ⅲ' }
+
 -- 管道健康检查：返回 true 才能调用托管方法
+-- 管道健康检查 + 按需建立
+--
+-- ⚠️ 为什么需要"建立"这一步（关键修复）：
+--   mono_invoke_method 走【每线程】命名管道（libmono.monopipes[threadId]）。
+--   实测发现：**CE 的定时器回调可能跑在与之前不同的线程上**，
+--   那个线程如果没有管道，最初版本的 pipeOK() 会直接返回 false，
+--   于是定时器里的锁定【永远静默失败】—— 而手动点按钮（另一个线程）却正常。
+--   这正好解释了"手动写入有效、锁定无效"的现象。
+--
+--   修法：发现本线程没管道时，**主动调 getMonoPipe() 建立**（它是全局函数，
+--   monoscript.lua 里带按线程缓存逻辑），建好再判断。
 local function pipeOK()
   if type(libmono) ~= 'table' then return false, 'libmono missing' end
   if libmono.abort then return false, 'libmono.abort' end
@@ -188,9 +208,26 @@ local function pipeOK()
     if sd == nil or sd ~= 0 then return false, 'MDC shutting down' end
   end
   if type(libmono.monopipes) ~= 'table' then return false, 'no monopipes' end
-  local p = libmono.monopipes[getCurrentThreadID()]
-  if p == nil then return false, 'no pipe for thread' end
-  if p.Connected == false then return false, 'pipe disconnected' end
+
+  local tid = getCurrentThreadID()
+  local p = libmono.monopipes[tid]
+
+  -- 本线程还没有管道 -> 主动建立（而不是直接放弃）
+  if p == nil and type(getMonoPipe) == 'function' then
+    local ok, r = pcall(getMonoPipe)
+    if ok then p = libmono.monopipes[tid] end
+  end
+
+  if p == nil then return false, 'no pipe for thread ' .. tostring(tid) end
+  if p.Connected == false then
+    -- 断了的管道：销毁后重建一次
+    pcall(function() p.destroy() end)
+    libmono.monopipes[tid] = nil
+    if type(getMonoPipe) == 'function' then pcall(getMonoPipe) end
+    p = libmono.monopipes[tid]
+    if p == nil then return false, 'pipe reconnect failed' end
+    if p.Connected == false then return false, 'pipe still disconnected' end
+  end
   if libmono.monopipe == nil then return false, 'monopipe nil' end
   return true
 end
@@ -407,8 +444,9 @@ local function setArouse(value)
   if AROUSE_LAST_V == value and AROUSE_MIN_GAP > (now - AROUSE_LAST_T) then
     return true, 'throttled'
   end
-  AROUSE_LAST_T = now
-  AROUSE_LAST_V = value
+  -- ⚠️ 注意：时间戳【只在成功后】更新（见函数末尾）。
+  --    早期版本在这里就更新了，导致一次失败会把限流窗口一起"吃掉"，
+  --    后续重试被误判成"刚调过"而跳过。
 
   local pk, why = pipeOK()
   if not pk then return false, '管道不健康: ' .. tostring(why) end
@@ -421,6 +459,10 @@ local function setArouse(value)
   if not dom then return false, 'no mono domain' end
   local ok, r = pcall(mono_invoke_method, dom, setM, psa, { value })
   if not ok then return false, 'invoke 失败: ' .. tostring(r) end
+
+  -- 成功后才记账（限流窗口从成功那一刻起算）
+  AROUSE_LAST_T = now
+  AROUSE_LAST_V = value
   return true, string.format('Set(%.2f) -> %s', value, tostring(r))
 end
 
@@ -642,14 +684,21 @@ end)
 -- ---------------------------------------------------------------- 锁定
 local LOCKS = {}
 local LOCKVAL = {}
-local AROUSE_LOCK = false
-local AROUSE_VAL = 0
+local AROUSE_FAILS = 0        -- 连续失败计数（用于日志节流）
+local AROUSE_TICKS = 0        -- 锁定心跳计数（确认定时器真的在跑）
 
 local function tickLocks()
   local i
   for i = 1, #WANT do
     local k = WANT[i].key
-    if LOCKS[k] and ADDR[k] and LOCKVAL[k] then
+    -- ⚠️ 性快感要排除在通用循环之外！
+    --   通用循环用 wr() 直接写内存，而 Arouse 的 ADDR 是【UI 副本】地址，
+    --   写它无效（游戏不认，且会被下次推送覆盖）。
+    --   性快感必须走 setArouse()（正规 Set 方法）—— 见下面的专门分支。
+    --   踩过的坑：用行内 □ 按钮锁 Arouse 时只设了 LOCKS['Arouse']，
+    --   于是进了这个通用循环、写的却是无效字段 —— 界面上显示红了但没人管，
+    --   而 setArouse 分支因为 AROUSE_LOCK 是 false 从不进入，心跳日志一片空白。
+    if k ~= 'Arouse' and LOCKS[k] and ADDR[k] and LOCKVAL[k] then
       local it = WANT[i]
       local cur = rd(it, ADDR[k])
       if cur ~= LOCKVAL[k] then wr(it, ADDR[k], LOCKVAL[k]) end
@@ -658,8 +707,31 @@ local function tickLocks()
   -- 性快感：走 setArouse（正规 Set 方法，UI 会同步）
   -- 注意：真源一旦设定，游戏仍会按 decreasePerSecond 自然递减，
   --       所以要"锁定"就得周期重设 —— 但重设也要走正规方法。
-  if AROUSE_LOCK then
-    pcall(function() setArouse(AROUSE_VAL) end)
+  --
+  -- 锁定开关只有一个：LOCKS['Arouse']（由该行的 □ 按钮设置）。
+  -- 不再有 AROUSE_LOCK 这样的平行开关 —— 多入口就是 bug 温床（见下方设计说明）。
+  if LOCKS.Arouse and LOCKVAL.Arouse then
+    local arouseWant = LOCKVAL.Arouse
+    AROUSE_TICKS = (AROUSE_TICKS or 0) + 1
+    if AROUSE_TICKS == 1 or (AROUSE_TICKS % 40) == 0 then
+      -- 心跳：每 40 次（约 20 秒）记一条，确认定时器在跑、以及当前真值
+      local hv = nil
+      pcall(function() hv = getArouseHeat() end)
+      say(string.format('[arouse-lock] tick#%d 目标=%.2f 真值=%s', AROUSE_TICKS,
+        arouseWant, hv and string.format('%.2f', hv) or '?'))
+    end
+    local ok, msg = setArouse(arouseWant)
+    if not ok then
+      AROUSE_FAILS = AROUSE_FAILS + 1
+      if AROUSE_FAILS == 1 or (AROUSE_FAILS % 10) == 0 then
+        say(string.format('[arouse-lock] 重设失败 x%d: %s', AROUSE_FAILS, tostring(msg)))
+      end
+    else
+      if AROUSE_FAILS > 0 then
+        say(string.format('[arouse-lock] 恢复成功（此前失败 %d 次）', AROUSE_FAILS))
+        AROUSE_FAILS = 0
+      end
+    end
   end
 end
 
@@ -672,11 +744,14 @@ local function refresh()
     local a = ADDR[k]
     local r = ROWS[k]
     if r and a then
+      -- ⚠️ 显示策略（踩过坑后改的）：
+      --   以前是"锁定中就显示锁定值"，结果锁定【实际失效】时界面照样显示目标值，
+      --   玩家看到 23.00 而真实值是 40.23 —— 把失败给遮盖了。
+      --   现在一律读【真值】：锁定生效时真值≈目标（正常色）；
+      --   不生效时真值≠目标（标红），问题立刻可见。
       local v
-      if LOCKS[k] then
-        v = LOCKVAL[k]
-      elseif k == 'Arouse' then
-        -- 性快感显示真源（SexualHeatManager._heat），而不是 UI 副本
+      if k == 'Arouse' then
+        -- 性快感读真源（SexualHeatManager._heat），不是 UI 副本
         local hv = nil
         pcall(function() hv = getArouseHeat() end)
         v = hv or rd(it, a)
@@ -684,13 +759,34 @@ local function refresh()
         v = rd(it, a)
       end
       if v == nil then v = -1 end
+
+      -- 锁定口径：只用 LOCKS / LOCKVAL（每个数值条目一套，唯一来源）
+      local locked, target = LOCKS[k], LOCKVAL[k]
+
+      local mismatch = false
+      if locked and target then
+        -- float 用容差比较，int 精确比较
+        if it.vt == 'float' then
+          local d = v - target
+          if d > 0.05 or (-d) > 0.05 then mismatch = true end
+        else
+          if v ~= target then mismatch = true end
+        end
+      end
+
       if it.vt == 'float' then
         r.cur.Caption = string.format('%.2f', v)
       else
         r.cur.Caption = tostring(v)
       end
       if r.lock then
-        r.cur.Font.Color = LOCKS[k] and 0x0020A0FF or 0x00FFFFFF
+        if not locked then
+          r.cur.Font.Color = 0x00FFFFFF
+        elseif mismatch then
+          r.cur.Font.Color = 0x000000FF   -- 锁定中但没锁住 -> 标红（蓝通道为 0 的纯红）
+        else
+          r.cur.Font.Color = 0x0020A0FF   -- 锁定生效 -> 橙黄
+        end
       end
     end
   end
@@ -719,10 +815,11 @@ local function refresh()
         if fam.row then
           local v = lv[fam.id] or 0
           if v > 0 then
-            fam.row.Caption = tostring(v) .. ' 级'
+            -- 与档位按钮风格统一：直接显示罗马数字
+            fam.row.Caption = LV_ROMAN[v] or tostring(v)
             pcall(function() fam.row.Font.Color = 0x0040C0FF end)
           else
-            fam.row.Caption = '无'
+            fam.row.Caption = '0'
             pcall(function() fam.row.Font.Color = 0x00808080 end)
           end
         end
@@ -908,43 +1005,32 @@ local function buildPanel()
   local X_LOCK = X_BTN + W_BTN + GAP
   local FW_ROW = X_LOCK + W_LOCK + PAD
 
+  -- ------------------------------------------------------------------
+  -- 底部快捷按钮
+  --
+  -- ★ 设计原则（用户 2026-09-20 明确要求，作为模板约定）：
+  --   这里【只放一次性动作】，**不放任何锁定类按钮**。
+  --
+  --   为什么：锁定是"每个数值条目自己的 □ 按钮"的职责，唯一入口。
+  --   一旦再提供"全部锁定 / 快感锁定50% / 快感解锁"这类按钮，
+  --   同一个数值就有了【两个锁定开关】，两边状态必须手工同步 ——
+  --   实测就因此出过 bug：行内 □ 设了 LOCKS.Arouse，而快捷按钮设的是
+  --   AROUSE_LOCK，两条路各自为政，导致"锁定中却没人重设"。
+  --   这类问题在任何项目、任何"多入口锁定"的设计里都会重演。
+  --
+  --   所以：**锁定只走行内 □**；一次性动作（补满、开关无敌等）才放这里。
+  -- ------------------------------------------------------------------
   local quick = {
     { cap = 'HP 全满', fn = function()
-        setVal('HP', getVal('MaxHP')); if LOCKS.HP then LOCKVAL.HP = getVal('MaxHP') end; refresh()
+        setVal('HP', getVal('MaxHP')); refresh()
       end },
     { cap = '体力全满', fn = function()
-        setVal('Stamina', getVal('MaxStamina')); if LOCKS.Stamina then LOCKVAL.Stamina = getVal('MaxStamina') end; refresh()
+        setVal('Stamina', getVal('MaxStamina')); refresh()
       end },
     { cap = '无敌开', fn = function() setVal('Invincible', 1); refresh() end },
     { cap = '无敌关', fn = function() setVal('Invincible', 0); refresh() end },
     { cap = '恢复x10', fn = function()
         setVal('StamRestore', getVal('StamRestore') * 10); refresh()
-      end },
-    { cap = '快感锁定50%', fn = function()
-        AROUSE_VAL = getVal('MaxArouse') * 0.5
-        AROUSE_LOCK = true
-        writeFloat(ADDR.Arouse, AROUSE_VAL)
-        refresh()
-      end },
-    { cap = '快感解锁', fn = function() AROUSE_LOCK = false; refresh() end },
-    { cap = '全部锁定', fn = function()
-        local function on(k)
-          if not LOCKS[k] then
-            LOCKVAL[k] = getVal(k); LOCKS[k] = true
-            if ROWS[k] and ROWS[k].lock then ROWS[k].lock.Caption = '■' end
-          end
-        end
-        on('HP'); on('Stamina'); on('Invincible')
-        refresh()
-      end },
-    { cap = '全部解锁', fn = function()
-        local i
-        for i = 1, #WANT do
-          LOCKS[WANT[i].key] = false; LOCKVAL[WANT[i].key] = nil
-          if ROWS[WANT[i].key] and ROWS[WANT[i].key].lock then ROWS[WANT[i].key].lock.Caption = '□' end
-        end
-        AROUSE_LOCK = false
-        refresh()
       end },
     { cap = '刷新', fn = refresh },
     { cap = '关闭', fn = quitTrainer },
@@ -957,30 +1043,49 @@ local function buildPanel()
   end
   qsum = qsum + GAP * (#quick - 1) + PAD * 2
 
-  local FW = math.max(FW_ROW, qsum)
+  -- ------------------------------------------------------------------
+  -- 家族区宽度需求（必须并入 FW，否则右侧按钮会被裁掉）
+  --
+  -- ⚠️ 踩过的坑：先前 FW 只按「数值行」和「快捷按钮行」算，
+  --   家族区（设在面板下方）的宽度需求没算进去 —— 结果右侧的「清除」按钮
+  --   超出了面板右边界，**在界面上根本看不到**（用户截图证实）。
+  --   修法：把家族区的宽度需求提前算出来，一起参与 FW 取最大值。
+  --
+  -- 按钮宽度按【单字符】估（现在按钮上是 "0" / "Ⅰ" / "Ⅱ" / "Ⅲ"），
+  -- 比原来的"设为N / 清除"省一半以上空间。
+  -- ------------------------------------------------------------------
+  local W_LVB = math.floor(estW('Ⅲ', TH) * 2.2) + PAD * 2      -- 档位按钮宽
+  local FW_FAM = PAD + W_NAME + GAP + W_NUM + GAP + 4 * (W_LVB + 6) + PAD
+
+  local FW = math.max(FW_ROW, qsum, FW_FAM)
   -- 高度：表头 + 10 个数值行 + HP比例/信息两行 + 家族区(标题+3行) + 快捷按钮一排
   local FH = PAD + HEAD_H + #WANT * ROW_H + (TH + PAD) * 2
              + (TH + PAD) + #FAMILIES * ROW_H + GAP + BTN_H + PAD + 8
 
   -- ------------------------------------------------------------------
-  -- 宽度上限 —— 三次踩坑后的最终策略
+  -- 宽度上限 —— 反复踩坑后的最终结论
   --
-  -- 踩过的坑：
-  --   ① getScreenWidth()：返回【物理】像素，与窗体逻辑像素差缩放比
-  --      （DSH 会话实测 3840，用户会话也 3840，但 Session0 的 CE 返回 1024！）
-  --   ② MainForm.Width：CE 主窗口的【当前尺寸】，不是屏幕宽度
-  --      （两个会话都是 799，完全不可用）
+  -- 【实测数据（关键）】
+  --   Session0 环境：getScreenWidth()=1024、MainForm.Width=799
+  --                  把面板 Width 设成 2000 能成功，但**实际渲染宽度只有 1038**
+  --                  → 说明 CE 窗体被**限制在 getScreenWidth() 附近**（1024+14 边框）
+  --   用户桌面会话：getScreenWidth()=3840、MainForm.Width=799、Font.Height=32
   --
-  -- 最终策略：**面板宽度由内容决定，上限取一个固定保守值**，
-  --   并且**永不把名字列压到装不下最长标签**。
+  -- 【结论】虽然 getScreenWidth() 返回的是"物理像素"、语义上不干净，
+  --   但**实测它就是窗体宽度的实际上限** —— 所以拿它当上限是【正确】的。
+  --   之前我把它排除掉、改用固定 3600，结果 FW 算到 1758 而面板只能渲染 1038，
+  --   右侧按钮全被裁掉（用户截图证实「清除」按钮不见了）。
   --
-  -- 上限取 1800 的依据（实测数据）：
-  --   用户桌面会话：getScreenWidth()=3840(物理)，200% 缩放 -> 逻辑 1920
-  --                 此时 textH=32，面板内容约需 1900 逻辑像素
-  --   DSH/Session0： getScreenWidth()=1024 -> 但这里只是开发环境，不用于交付
-  --   故 1800 在用户会话下刚好不压缩、又不至于超出屏宽（1920）。
+  -- 【策略】
+  --   1) 上限 = getScreenWidth()（拿不到就用保守的 1024）
+  --   2) 压缩时给**名字列设保底**，绝不把标签压到截断
+  --   3) 异常状态的档位按钮已改成单字符 "0 / Ⅰ / Ⅱ / Ⅲ"，
+  --      宽度需求比原来的"设为N + 清除"省一半以上，更容易塞进屏幕
   -- ------------------------------------------------------------------
-  local MAXW = 1800        -- 逻辑像素上限（按用户会话 1920 逻辑宽留余量）
+  -- 用户 2026-09-20 明确指定：面板宽度上限取 1536。
+  -- 依据：用户会话下该宽度能完整容纳所有控件（含异常状态区的 4 个档位按钮），
+  --       且不会超出屏幕可用范围。**不要再用 getScreenWidth() 之类的猜测**。
+  local MAXW = 1536
   if FW > MAXW then
     local k = MAXW / FW
     local minName = math.floor(estW(nameProbe, TH) * 1.25) + PAD * 2
@@ -989,6 +1094,8 @@ local function buildPanel()
     W_NAME = math.max(minName, sq(W_NAME, 60))
     W_NUM = sq(W_NUM, 50); W_EDIT = sq(W_EDIT, 60)
     W_BTN = sq(W_BTN, 46); W_MINI = sq(W_MINI, 30); W_LOCK = sq(W_LOCK, 40)
+    -- ⚠️ 档位按钮宽也必须缩放，否则压缩后 4 个按钮会把右侧挤出面板
+    W_LVB = sq(W_LVB, 26)
     GAP = sq(GAP, 6)
     X_NAME = PAD
     X_CUR  = X_NAME + W_NAME + GAP
@@ -997,8 +1104,11 @@ local function buildPanel()
     X_P1   = X_M1 + W_MINI + 4
     X_BTN  = X_P1 + W_MINI + GAP
     X_LOCK = X_BTN + W_BTN + GAP
-    FW = X_LOCK + W_LOCK + PAD
-    say(string.format('width capped by k=%.2f -> %d (MAXW %d, nameProbe=%s)', k, FW, MAXW, nameProbe))
+    -- 压缩后要【同时】满足数值行与家族区，取较大者（否则家族区按钮仍会溢出）
+    local fwRows = X_LOCK + W_LOCK + PAD
+    local fwFam  = PAD + W_NAME + GAP + W_NUM + GAP + 4 * (W_LVB + 6) + PAD
+    FW = math.max(fwRows, fwFam)
+    say(string.format('width capped by k=%.2f -> %d (MAXW %d, rows %d, fam %d)', k, FW, MAXW, fwRows, fwFam))
   else
     say(string.format('width not capped: FW=%d (MAXW %d)', FW, MAXW))
   end
@@ -1037,15 +1147,14 @@ local function buildPanel()
   -- ------------------------------------------------------------------
   -- 异常状态家族区（服从 / 淫乱 / 受虐倾向，各 1~3 级）
   --
-  -- 每行：家族名 | 当前等级 | 设为1 设为2 设为3 | 清除
-  -- 所有操作走 TrySetLevel / TryDowngrade（正规托管 API），
+  -- 每行：家族名 | 当前等级 | [0] [Ⅰ] [Ⅱ] [Ⅲ]
+  -- 四个按钮就是四个档位（0 = 无/清除），比"设为1/2/3 + 清除"省一半宽度，
+  -- 语义也更直观。所有操作走 TrySetLevel / TryDowngrade（正规托管 API），
   -- 且每次调用前由 familyOp 内部检查管道健康。
   -- ------------------------------------------------------------------
-  ROWS._statusHead = mkLabel(f, PAD, y, FW - PAD * 2, LBL_H, '异常状态（点击设置等级）')
+  ROWS._statusHead = mkLabel(f, PAD, y, FW - PAD * 2, LBL_H, '异常状态（点击档位按钮设置）')
   y = y + TH + PAD
 
-  local W_SET = math.floor(estW('设为3', TH) * 1.5) + PAD * 2
-  local W_CLR = math.floor(estW('清除', TH) * 1.5) + PAD * 2
   local X_LV  = PAD + W_NAME + GAP
   local X_S1  = X_LV + W_NUM + GAP
 
@@ -1055,20 +1164,24 @@ local function buildPanel()
     mkLabel(f, PAD, yRow + math.floor(PAD / 2) + 2, W_NAME, LBL_H, fam.cn)
     local lvLbl = mkLabel(f, X_LV, yRow + math.floor(PAD / 2) + 2, W_NUM, LBL_H, '-')
     fam.row = lvLbl
-    for lv = 1, 3 do
-      local xb = X_S1 + (lv - 1) * (W_SET + 6)
-      mkButton(f, xb, yRow, W_SET, BTN_H, '设为' .. lv, function()
-        local ok, msg = familyOp(fam.id, 'set', lv)
-        say(string.format('[status] %s = %d : ok=%s %s', fam.cn, lv, tostring(ok), tostring(msg)))
+    -- 四个档位按钮：0 / Ⅰ / Ⅱ / Ⅲ（0 表示清除）
+    for lv = 0, 3 do
+      local xb = X_S1 + lv * (W_LVB + 6)
+      local cap = (lv == 0) and '0' or LV_ROMAN[lv]
+      local target = lv
+      mkButton(f, xb, yRow, W_LVB, BTN_H, cap, function()
+        local ok, msg
+        if target == 0 then
+          -- 清除：逐级降级到 0（每步之间由 familyClear 内部复查管道）
+          local n = familyClear(fam.id, 3)
+          say(string.format('[status] %s 清除（降 %d 级）', fam.cn, n))
+        else
+          ok, msg = familyOp(fam.id, 'set', target)
+          say(string.format('[status] %s = %s : ok=%s %s', fam.cn, LV_ROMAN[target], tostring(ok), tostring(msg)))
+        end
         refresh()
       end)
     end
-    local xc = X_S1 + 3 * (W_SET + 6) + GAP
-    mkButton(f, xc, yRow, W_CLR, BTN_H, '清除', function()
-      local n = familyClear(fam.id, 3)
-      say(string.format('[status] %s 清除 %d 级', fam.cn, n))
-      refresh()
-    end)
     y = y + ROW_H
   end
   y = y + math.floor(PAD / 2)
