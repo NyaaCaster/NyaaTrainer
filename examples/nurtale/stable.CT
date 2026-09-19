@@ -15,49 +15,19 @@
     </CheatEntry>
     <CheatEntry>
       <ID>3</ID>
-      <Description>"HealthCap"</Description>
-      <VariableType>4 Bytes</VariableType>
-      <Address>0</Address>
-    </CheatEntry>
-    <CheatEntry>
-      <ID>4</ID>
       <Description>"Stamina"</Description>
       <VariableType>Float</VariableType>
       <Address>0</Address>
     </CheatEntry>
     <CheatEntry>
-      <ID>5</ID>
+      <ID>4</ID>
       <Description>"MaxStamina"</Description>
       <VariableType>4 Bytes</VariableType>
       <Address>0</Address>
     </CheatEntry>
     <CheatEntry>
-      <ID>6</ID>
-      <Description>"StaminaCap"</Description>
-      <VariableType>4 Bytes</VariableType>
-      <Address>0</Address>
-    </CheatEntry>
-    <CheatEntry>
-      <ID>7</ID>
-      <Description>"StamRestore"</Description>
-      <VariableType>Float</VariableType>
-      <Address>0</Address>
-    </CheatEntry>
-    <CheatEntry>
-      <ID>8</ID>
-      <Description>"Invincible"</Description>
-      <VariableType>Byte</VariableType>
-      <Address>0</Address>
-    </CheatEntry>
-    <CheatEntry>
-      <ID>9</ID>
+      <ID>5</ID>
       <Description>"Arouse"</Description>
-      <VariableType>Float</VariableType>
-      <Address>0</Address>
-    </CheatEntry>
-    <CheatEntry>
-      <ID>10</ID>
-      <Description>"MaxArouse"</Description>
       <VariableType>Float</VariableType>
       <Address>0</Address>
     </CheatEntry>
@@ -121,22 +91,71 @@ pcall(function()
   if f then f:write('=== Nurtale Nesche trainer ' .. os.date() .. ' ===\n'); f:close() end
 end)
 
--- 数值项：内部键(ASCII，CE 条目用) / 面板中文显示名 / 所属对象 / 类内字段名 / 类型
+-- ------------------------------------------------------------------
+-- 数值项定义
+--
+-- 字段说明（这套标记是"数值行控件"的行为契约）：
+--   key      内部键（ASCII，CE 地址条目的 Description 用它 —— 中文会让查找失效）
+--   label    面板显示名（中文）
+--   obj      所属对象（HEALTH / GAUGE）
+--   field    类内字段名（运行时按名字解析偏移）
+--   vt       类型：'float' 或 'int'
+--   maxKey   该值的"运行时上限"对应哪个条目（用于 MAX 按钮）。
+--            **留空表示没有上限概念 -> 该行不显示 MAX 按钮**
+--            （用户拍板：无上限项隐藏 MAX，但保留按钮占位以维持矩阵工整）
+--   noZero   true = 禁止归零（该行不显示 0 按钮）。
+--            用户拍板：**上限性质**与**开关性质**的项目隐藏 0 按钮 ——
+--            因为 HP上限=0 这类值可能让游戏异常（除零/血条崩溃）。
+--
+-- 已摘除项（用户拍板，2026-09-20）：
+--   HP硬上限 / 体力硬上限 / 快感上限 / 恢复速度
+--   —— 前三个对玩家无用（是内部天花板），恢复速度属于"一次改值"且可用输入框完成。
+-- ------------------------------------------------------------------
 local WANT = {
-  { key = 'HP',          label = 'HP',         obj = 'HEALTH', field = 'currentHealth',        vt = 'float' },
-  { key = 'MaxHP',       label = 'HP上限',      obj = 'HEALTH', field = 'maxHealth',            vt = 'int'   },
-  { key = 'HealthCap',   label = 'HP硬上限',    obj = 'HEALTH', field = 'healthCap',            vt = 'int'   },
-  { key = 'Stamina',     label = '体力',        obj = 'HEALTH', field = 'currentStamina',       vt = 'float' },
-  { key = 'MaxStamina',  label = '体力上限',    obj = 'HEALTH', field = 'maxStamina',           vt = 'int'   },
-  { key = 'StaminaCap',  label = '体力硬上限',  obj = 'HEALTH', field = 'staminaCap',           vt = 'int'   },
-  { key = 'StamRestore', label = '恢复速度',    obj = 'HEALTH', field = 'staminaRestoreAmount', vt = 'float' },
-  { key = 'Invincible',  label = '无敌模式',    obj = 'HEALTH', field = 'IsUnDamagable',        vt = 'int'   },
-  { key = 'Arouse',      label = '性快感',      obj = 'GAUGE',  field = 'currentarouse',        vt = 'float' },
-  { key = 'MaxArouse',   label = '快感上限',    obj = 'GAUGE',  field = 'maxarouse',            vt = 'float' },
+  { key = 'HP',        label = 'HP',       obj = 'HEALTH', field = 'currentHealth',  vt = 'float', maxKey = 'MaxHP' },
+  { key = 'MaxHP',     label = 'HP上限',   obj = 'HEALTH', field = 'maxHealth',      vt = 'int',   noZero = true },
+  { key = 'Stamina',   label = '体力',     obj = 'HEALTH', field = 'currentStamina', vt = 'float', maxKey = 'MaxStamina' },
+  { key = 'MaxStamina',label = '体力上限', obj = 'HEALTH', field = 'maxStamina',     vt = 'int',   noZero = true },
+  { key = 'Arouse',    label = '性快感',   obj = 'GAUGE',  field = 'currentarouse',  vt = 'float', maxKey = 'MaxArouse' },
+  -- 快感上限本身已摘除，但性快感的 MAX 需要它 —— 用"隐藏条目"仅供内部取上限值，
+  -- 不参与面板行渲染、也不进 CE 地址列表（见 WANT_HIDDEN 的处理）
+}
+
+-- 仅供内部使用（不渲染行、不进地址列表）的隐藏条目。
+-- 存在理由：性快感的 MAX 需要一个"上限值"来源；上限项本身对玩家无意义，
+-- 所以取它的值但不在界面上暴露。
+local WANT_HIDDEN = {
+  { key = 'MaxArouse', label = '快感上限', obj = 'GAUGE', field = 'maxarouse', vt = 'float' },
 }
 
 local HEALTH_CLASS = 'Health'
 local GAUGE_CLASS  = 'ArouseGaugeManager'
+
+-- ------------------------------------------------------------------
+-- 状态开关（无数值，只有 生效/不生效 两态）
+--
+-- 用户拍板：这类项目【不再放进数值修改模块】，而是单独一组「状态开关」，
+-- 控件用【勾选框】（不是"开/关"两个按钮）—— 一个勾选框就是二态开关，
+-- 用两个按钮表达既是重复入口、又占宽度。
+--
+-- 本游戏目前只有一项：无敌模式（IsUnDamagable，0/1）。
+-- 判定"是否生效"：读该字段 != 0。
+-- ------------------------------------------------------------------
+local SWITCHES = {
+  { key = 'Invincible', label = '无敌模式', obj = 'HEALTH', field = 'IsUnDamagable',
+    tip = '开启后受到攻击不掉血' },
+}
+
+-- 全部需要解析地址的条目（含隐藏项与状态开关）—— 只用于【解析地址】。
+-- 其中只有 WANT 会写进 CE 地址列表；WANT_HIDDEN 与 SWITCHES 只在面板内部用。
+local ALL_ITEMS = {}
+do
+  local i
+  for i = 1, #WANT do ALL_ITEMS[#ALL_ITEMS + 1] = WANT[i] end
+  for i = 1, #WANT_HIDDEN do ALL_ITEMS[#ALL_ITEMS + 1] = WANT_HIDDEN[i] end
+  for i = 1, #SWITCHES do ALL_ITEMS[#ALL_ITEMS + 1] = SWITCHES[i] end
+end
+
 
 -- ------------------------------------------------------------------
 -- 共享状态（必须先声明，再被下面的函数引用）
@@ -584,9 +603,11 @@ local function objFor(name)
 end
 
 local function resolve(key)
+  -- 注意：查 ALL_ITEMS（含隐藏项与状态开关），
+  -- 因为面板要读 快感上限 等不显示在界面上的值
   local i
-  for i = 1, #WANT do
-    local it = WANT[i]
+  for i = 1, #ALL_ITEMS do
+    local it = ALL_ITEMS[i]
     if it.key == key then
       local obj, err = objFor(it.obj)
       if not obj then return nil, err end
@@ -597,6 +618,15 @@ local function resolve(key)
     end
   end
   return nil, 'unknown key: ' .. tostring(key)
+end
+
+-- 按 key 取条目定义（供 getVal/setVal 等判断类型与选项）
+local function findItem(key)
+  local i
+  for i = 1, #ALL_ITEMS do
+    if ALL_ITEMS[i].key == key then return ALL_ITEMS[i] end
+  end
+  return nil
 end
 
 local function rd(it, a)
@@ -612,11 +642,21 @@ local function apply()
   local al = getAddressList()
   local n, firstErr = 0, nil
   local i
-  for i = 1, #WANT do
-    local it = WANT[i]
+  -- ① 解析【全部】条目地址（含隐藏项与状态开关 —— 面板要用，但不进 CE 列表）
+  for i = 1, #ALL_ITEMS do
+    local it = ALL_ITEMS[i]
     local a, err = resolve(it.key)
     if a then
       ADDR[it.key] = a
+    else
+      if firstErr == nil then firstErr = err end
+    end
+  end
+  -- ② 只把 WANT（用户可见的数值行）写进 CE 地址列表
+  for i = 1, #WANT do
+    local it = WANT[i]
+    local a = ADDR[it.key]
+    if a then
       n = n + 1
       local mr = nil
       local j
@@ -628,8 +668,6 @@ local function apply()
       mr.Description = it.key
       if it.vt == 'float' then mr.Type = vtSingle else mr.Type = vtDword end
       mr.Address = string.format('%X', a)
-    else
-      if firstErr == nil then firstErr = err end
     end
   end
 
@@ -662,7 +700,7 @@ local function apply()
     say('Player 未解析 —— 异常状态家族功能不可用')
   end
 
-  say(string.format('resolved %d/%d entries', n, #WANT))
+  say(string.format('resolved %d visible + %d hidden/switch', n, #WANT_HIDDEN + #SWITCHES))
   if n == 0 then return 0, firstErr end
   return n
 end
@@ -790,20 +828,23 @@ local function refresh()
       end
     end
   end
-  local hp = ADDR.HP and readFloat(ADDR.HP)
-  local mx = ADDR.MaxHP and readInteger(ADDR.MaxHP)
-  if ROWS._ratio and hp and mx and mx > 0 then
-    ROWS._ratio.Caption = string.format('HP %.1f%%   %.2f / %d', hp / mx * 100, hp, mx)
+  -- 注意：用户拍板【移除汇总监控行】。
+  -- 每行的「当前」列本身就是监控（读真值），符合 CE 原本的 UI 意图，
+  -- 汇总行属于重复展示，去掉以降低维护面。
+
+  -- 状态开关（勾选框）：勾选态 = 该状态生效
+  local si
+  for si = 1, #SWITCHES do
+    local sw = SWITCHES[si]
+    local r = ROWS['sw_' .. sw.key]
+    local a = ADDR[sw.key]
+    if r and a then
+      local it = findItem(sw.key)
+      local v = it and rd(it, a) or readInteger(a)
+      local on = (v ~= nil and v ~= 0)
+      pcall(function() r.Checked = on end)
+    end
   end
-  local st = ADDR.Stamina and readFloat(ADDR.Stamina)
-  local sm = ADDR.MaxStamina and readInteger(ADDR.MaxStamina)
-  local ar = ADDR.Arouse and readFloat(ADDR.Arouse)
-  local parts = {}
-  if st and sm and sm > 0 then
-    parts[#parts + 1] = string.format('体力 %.1f%%', st / sm * 100)
-  end
-  if ar then parts[#parts + 1] = string.format('性快感 %.2f', ar) end
-  if ROWS._info then ROWS._info.Caption = table.concat(parts, '    ') end
 
   -- 三个异常状态家族的当前等级
   if PLAYER_ADDR then
@@ -838,73 +879,111 @@ local function setVal(k, v)
   end
   local a = ADDR[k]
   if a == nil then return end
-  local i
-  for i = 1, #WANT do
-    if WANT[i].key == k then wr(WANT[i], a, v) return end
-  end
+  local it = findItem(k)
+  if it then wr(it, a, v) end
 end
 
 local function getVal(k)
   local a = ADDR[k]
   if a == nil then return 0 end
-  local i
-  for i = 1, #WANT do
-    if WANT[i].key == k then return rd(WANT[i], a) end
-  end
+  local it = findItem(k)
+  if it then return rd(it, a) end
   return 0
 end
 
+--[[
+  锁定开关（正方形控件，不是按钮）
+
+  用户拍板：锁定显示为【状态开关样式的正方形控件】，既表达二态、又省宽度。
+
+  契约（唯一入口原则）：
+    - 锁定值 = 点击锁定那一刻的【当前值】；若输入框里有数字，则以输入框为准
+    - 锁定后由 tickLocks 周期重设；再次点击解除
+]]
 local function toggleLock(k)
   local r = ROWS[k]
   if r == nil or ADDR[k] == nil then return end
   if LOCKS[k] then
     LOCKS[k] = false
     LOCKVAL[k] = nil
-    if r.lock then r.lock.Caption = '□' end
     say('unlock ' .. k)
   else
     local v = tonumber(r.edit.Text)
     if v == nil then v = getVal(k) end
-    if WANT[1].key == k then
-      -- float 项不取整
-    else
-      v = math.floor(v)
-    end
+    local it = findItem(k)
+    if it and it.vt ~= 'float' then v = math.floor(v) end
     LOCKS[k] = true
     LOCKVAL[k] = v
     setVal(k, v)
-    r.edit.Text = ''
-    if r.lock then r.lock.Caption = '■' end
+    if r.edit then r.edit.Text = '' end
     say(string.format('lock %s = %s', k, tostring(v)))
   end
   refresh()
 end
 
+-- 加减（直接改值，不需要"应用"）
+-- 若该值处于锁定态，则同时把锁定目标一起挪动，保持"锁定中调值"的直觉行为
 local function bump(k, d)
   local a = ADDR[k]
   if a == nil then return end
   local base = LOCKS[k] and LOCKVAL[k] or getVal(k)
   local v = base + d
+  -- 写成 > 形式，避免裸尖括号（.CT 是 XML）
+  if v > 0 then else v = 0 end
   setVal(k, v)
   if LOCKS[k] then LOCKVAL[k] = v end
   refresh()
 end
 
+-- 归零（用户拍板：仅"当前值"性质的项开放；上限/开关性质的项目不显示此按钮）
+local function zeroVal(k)
+  if ADDR[k] == nil then return end
+  setVal(k, 0)
+  if LOCKS[k] then LOCKVAL[k] = 0 end
+  refresh()
+end
+
+-- 拉到运行时上限（MAX）
+-- 用户拍板语义：把「当前值」改为「运行时上限值」——
+--   上限从 maxKey 指向的条目实时读取，不做额外裁剪。
+--   本游戏：HP→HP上限、体力→体力上限、性快感→快感上限(100)
+local function maxVal(k)
+  local it = findItem(k)
+  if not it or not it.maxKey then return end
+  local mv = getVal(it.maxKey)
+  if mv == nil then return end
+  setVal(k, mv)
+  if LOCKS[k] then LOCKVAL[k] = mv end
+  refresh()
+end
+
+-- 应用输入框里的值（"应用"按钮）
 local function writeField(k)
   local r = ROWS[k]
   if r == nil then return end
   local v = tonumber(r.edit.Text)
-  if v == nil then r.cur.Caption = '无效' return end
-  -- int 项取整；float 项保留小数（HP / 体力 / 性快感都是 float）
-  local i
-  local isFloat = false
-  for i = 1, #WANT do
-    if WANT[i].key == k and WANT[i].vt == 'float' then isFloat = true end
+  if v == nil then
+    if r.cur then r.cur.Caption = '无效' end
+    return
   end
-  if not isFloat then v = math.floor(v) end
+  local it = findItem(k)
+  if it and it.vt ~= 'float' then v = math.floor(v) end
   setVal(k, v)
   if LOCKS[k] then LOCKVAL[k] = v end
   r.edit.Text = ''
+  refresh()
+end
+
+-- 状态开关（勾选框）：勾选 = 置 1，取消 = 置 0
+local function toggleSwitch(key)
+  local a = ADDR[key]
+  if a == nil then return end
+  local it = findItem(key)
+  local cur = it and rd(it, a) or readInteger(a)
+  local on = (cur ~= nil and cur ~= 0)
+  local nv = on and 0 or 1
+  if it then wr(it, a, nv) else writeInteger(a, nv) end
+  say(string.format('[switch] %s -> %d', key, nv))
   refresh()
 end
 
@@ -934,6 +1013,30 @@ local function mkButton(owner, x, y, w, h, cap, fn)
   return b
 end
 
+-- 正方形按钮（用于 [-] [+] [0] [MAX] 这类单字符/短标签操作按钮）
+--   用户拍板：加减按钮宽=高。整个"操作按钮"列宽统一按正方形边长走，排版工整。
+local function mkSquareButton(owner, x, y, side, cap, fn)
+  return mkButton(owner, x, y, side, side, cap, fn)
+end
+
+-- 正方形状态开关（用于"锁定"）
+--   用户拍板：锁定不做成按钮样式，改用状态开关式的正方形控件。
+--
+--   ⚠️ 实现说明：CE 的 createButton 没有 Checked 属性（那是 CheckBox 的），
+--   而 CE 的 Lua 里没有直接暴露 createCheckBox。
+--   所以这里用【按钮 + 自绘文字符号】模拟开关外观：
+--     未锁 = "□"（空心方框，白色）
+--     已锁 = "■"（实心方块，橙黄）
+--   行为上仍是"点击切换"，与勾选框等价，且宽度 = 高度（正方形）。
+local function mkLockToggle(owner, x, y, side, fn)
+  local b = createButton(owner)
+  b.Left = x; b.Top = y; b.Width = side; b.Height = side
+  b.Caption = '□'
+  b.OnClick = function(sender) pcall(fn) end
+  setFont(b)
+  return b
+end
+
 -- 按字高保守估算文字宽度。
 --   汉字实际宽度 ≈ 1 个字高（CE 默认字体下混排时略宽），故系数取 1.35
 --   （原为 1.15，实测在用户会话会把「体力硬上限」这类 5 字标签算窄、导致截断）。
@@ -953,17 +1056,9 @@ local function buildPanel()
   local f = createForm(false)
   pcall(function() f.DoNotSaveInTable = true end)
   f.Caption = 'Nurtale Nesche 修改器'
-  -- ------------------------------------------------------------------
-  -- 任务栏显示（用户要求）
-  --
-  -- CE 的 createForm 默认 ShowInTaskbar = stDefault，面板不进任务栏，
-  -- 切游戏/修改器只能靠 Alt+Tab，还容易误触游戏快捷键 —— 很麻烦。
-  --
-  -- 设成 stAlways(1) 即可进任务栏。
-  -- 注意：LCL 的枚举常量（stAlways 等）在 CE 的 Lua 全局里【不存在】
-  --   （是 nil），直接写 f.ShowInTaskbar = stAlways 会静默失败
-  --   （回读仍是 stDefault）。必须用数字：0=stDefault 1=stAlways 2=stNever。
-  -- ------------------------------------------------------------------
+  -- 任务栏显示（用户要求）：CE 的 createForm 默认 stDefault（不进任务栏）。
+  -- ⚠️ 必须用数字：LCL 枚举常量（stAlways 等）在 CE 的 Lua 全局里不存在（是 nil），
+  --    写 f.ShowInTaskbar = stAlways 会静默失败（回读仍是 stDefault）。
   pcall(function() f.ShowInTaskbar = 1 end)
   setFont(f)
 
@@ -978,205 +1073,262 @@ local function buildPanel()
 
   local PAD  = 14
   local GAP  = 12
-  -- 名字列宽度：按【最长的中文 label】动态算（不用写死字面量）
-  local nameProbe = ''
+  local SIDE = TH + PAD * 2                    -- 正方形控件的边长（操作按钮 / 锁定开关）
+  local BTN_H = SIDE
+  local LBL_H = TH + 8
+  local ROW_H = SIDE + 10
+
+  -- 宽度：全部由内容决定，最后统一封顶
+  local nameProbe = '属性'
   do
     local q
     for q = 1, #WANT do
       if #WANT[q].label > #nameProbe then nameProbe = WANT[q].label end
     end
+    local q2
+    for q2 = 1, #SWITCHES do
+      if #SWITCHES[q2].label > #nameProbe then nameProbe = SWITCHES[q2].label end
+    end
+    local q3
+    for q3 = 1, #FAMILIES do
+      if #FAMILIES[q3].cn > #nameProbe then nameProbe = FAMILIES[q3].cn end
+    end
   end
+
   local W_NAME = math.floor(estW(nameProbe, TH) * 1.35) + PAD * 2
   local W_NUM  = math.floor(estW('9999.99', TH) * 1.70) + PAD * 2
-  local W_EDIT = W_NUM + PAD * 2
-  local W_BTN  = math.floor(estW('写入', TH) * 1.70) + PAD * 2
-  local W_MINI = math.floor(estW('+', TH) * 3.2) + PAD
-  local W_LOCK = math.floor(estW('■', TH) * 3.4) + PAD
-  local LBL_H  = TH + 8
-  local BTN_H  = TH + PAD * 2
-  local ROW_H  = TH + PAD * 2 + 10
-  local HEAD_H = TH + PAD * 2
-  local X_NAME = PAD
-  local X_CUR  = X_NAME + W_NAME + GAP
-  local X_EDIT = X_CUR + W_NUM + GAP
-  local X_M1   = X_EDIT + W_EDIT + GAP
-  local X_P1   = X_M1 + W_MINI + 4
-  local X_BTN  = X_P1 + W_MINI + GAP
-  local X_LOCK = X_BTN + W_BTN + GAP
-  local FW_ROW = X_LOCK + W_LOCK + PAD
+  -- 输入框：用户拍板"保留当前字体十个 9 这样的宽度就够"
+  local W_EDIT = math.floor(estW('9999999999', TH) * 1.10) + PAD * 2
+  local W_APPLY = math.floor(estW('应用', TH) * 1.40) + PAD * 2   -- 够 2 个字即可
 
-  -- ------------------------------------------------------------------
-  -- 底部快捷按钮
-  --
-  -- ★ 设计原则（用户 2026-09-20 明确要求，作为模板约定）：
-  --   这里【只放一次性动作】，**不放任何锁定类按钮**。
-  --
-  --   为什么：锁定是"每个数值条目自己的 □ 按钮"的职责，唯一入口。
-  --   一旦再提供"全部锁定 / 快感锁定50% / 快感解锁"这类按钮，
-  --   同一个数值就有了【两个锁定开关】，两边状态必须手工同步 ——
-  --   实测就因此出过 bug：行内 □ 设了 LOCKS.Arouse，而快捷按钮设的是
-  --   AROUSE_LOCK，两条路各自为政，导致"锁定中却没人重设"。
-  --   这类问题在任何项目、任何"多入口锁定"的设计里都会重演。
-  --
-  --   所以：**锁定只走行内 □**；一次性动作（补满、开关无敌等）才放这里。
-  -- ------------------------------------------------------------------
+  -- 数值行横向布局（用户拍板的顺序）：
+  --   [属性] [当前] | [0] [-] [+] [MAX] | [输入框] [应用] | [锁定]
+  --   说明：0/-/+ /MAX 是一组（直接改值，不需"应用"）；
+  --         输入框 + 应用 是一组（输入需提交）。
+  local X_NAME  = PAD
+  local X_CUR   = X_NAME + W_NAME + GAP
+  local X_ZERO  = X_CUR + W_NUM + GAP
+  local X_MINUS = X_ZERO + SIDE + 4
+  local X_PLUS  = X_MINUS + SIDE + 4
+  local X_MAX   = X_PLUS + SIDE + 4
+  local X_EDIT  = X_MAX + SIDE + GAP
+  local X_APPLY = X_EDIT + W_EDIT + 6
+  local X_LOCK  = X_APPLY + W_APPLY + GAP
+  local FW_ROW  = X_LOCK + SIDE + PAD
+
+  -- 状态开关行：[名称] [开关] （+ 说明文字）
+  local W_SWNOTE = math.floor(estW('开启后受到攻击不掉血', TH) * 1.10)
+  local X_SWTOG = X_NAME + W_NAME + GAP
+  local FW_SW   = X_SWTOG + SIDE + GAP + W_SWNOTE + PAD
+
+  -- 定制选项行（异常状态）：[名称] [当前] [0] [Ⅰ] [Ⅱ] [Ⅲ]
+  local X_LV    = X_NAME + W_NAME + GAP
+  local X_S1    = X_LV + W_NUM + GAP
+  local W_LVB   = math.floor(estW('Ⅲ', TH) * 2.2) + PAD * 2
+  local FW_FAM  = X_S1 + 4 * (W_LVB + 6) + PAD
+
+  -- 工具条（顶部）：刷新等"修改器本体功能"
+  local W_TBBTN = math.floor(estW('刷新', TH) * 1.40) + PAD * 2
+  local H_TBAR  = SIDE + PAD
+  local FW_TBAR = PAD + W_TBBTN + PAD
+
+  -- 底部"一次性动作"按钮（用户拍板：只放一次性动作，不放任何锁定类按钮）
   local quick = {
-    { cap = 'HP 全满', fn = function()
-        setVal('HP', getVal('MaxHP')); refresh()
+    { cap = '重置锁定', fn = function()
+        -- 一次性把所有锁定关掉。注意这是【清理动作】不是"锁定类按钮"——
+        -- 目的是避免残留锁定在用户不知情时持续改值。
+        local i
+        local n = 0
+        for i = 1, #WANT do
+          if LOCKS[WANT[i].key] then
+            LOCKS[WANT[i].key] = false
+            LOCKVAL[WANT[i].key] = nil
+            n = n + 1
+          end
+        end
+        say(string.format('[quick] 已解除 %d 个锁定', n))
+        refresh()
       end },
-    { cap = '体力全满', fn = function()
-        setVal('Stamina', getVal('MaxStamina')); refresh()
+    { cap = '全部拉满', fn = function()
+        local i
+        for i = 1, #WANT do
+          local it = WANT[i]
+          if it.maxKey then maxVal(it.key) end
+        end
+        refresh()
       end },
-    { cap = '无敌开', fn = function() setVal('Invincible', 1); refresh() end },
-    { cap = '无敌关', fn = function() setVal('Invincible', 0); refresh() end },
-    { cap = '恢复x10', fn = function()
-        setVal('StamRestore', getVal('StamRestore') * 10); refresh()
-      end },
-    { cap = '刷新', fn = refresh },
-    { cap = '关闭', fn = quitTrainer },
   }
+
   local qw, qsum = {}, 0
   local i
   for i = 1, #quick do
-    qw[i] = math.floor(estW(quick[i].cap, TH) * 1.35) + PAD * 2
+    qw[i] = math.floor(estW(quick[i].cap, TH) * 1.40) + PAD * 2
     qsum = qsum + qw[i]
   end
   qsum = qsum + GAP * (#quick - 1) + PAD * 2
 
-  -- ------------------------------------------------------------------
-  -- 家族区宽度需求（必须并入 FW，否则右侧按钮会被裁掉）
-  --
-  -- ⚠️ 踩过的坑：先前 FW 只按「数值行」和「快捷按钮行」算，
-  --   家族区（设在面板下方）的宽度需求没算进去 —— 结果右侧的「清除」按钮
-  --   超出了面板右边界，**在界面上根本看不到**（用户截图证实）。
-  --   修法：把家族区的宽度需求提前算出来，一起参与 FW 取最大值。
-  --
-  -- 按钮宽度按【单字符】估（现在按钮上是 "0" / "Ⅰ" / "Ⅱ" / "Ⅲ"），
-  -- 比原来的"设为N / 清除"省一半以上空间。
-  -- ------------------------------------------------------------------
-  local W_LVB = math.floor(estW('Ⅲ', TH) * 2.2) + PAD * 2      -- 档位按钮宽
-  local FW_FAM = PAD + W_NAME + GAP + W_NUM + GAP + 4 * (W_LVB + 6) + PAD
+  local FW = math.max(FW_ROW, FW_SW, FW_FAM, FW_TBAR, qsum)
 
-  local FW = math.max(FW_ROW, qsum, FW_FAM)
-  -- 高度：表头 + 10 个数值行 + HP比例/信息两行 + 家族区(标题+3行) + 快捷按钮一排
-  local FH = PAD + HEAD_H + #WANT * ROW_H + (TH + PAD) * 2
-             + (TH + PAD) + #FAMILIES * ROW_H + GAP + BTN_H + PAD + 8
+  -- 高度：工具条 + 数值区(标题+行) + 状态开关区 + 定制选项区 + 底部按钮
+  local HEAD_H = TH + PAD
+  local FH = H_TBAR
+             + HEAD_H + #WANT * ROW_H + PAD
+             + HEAD_H + #SWITCHES * ROW_H + PAD
+             + HEAD_H + #FAMILIES * ROW_H + PAD
+             + BTN_H + PAD + 8
 
   -- ------------------------------------------------------------------
-  -- 宽度上限 —— 反复踩坑后的最终结论
+  -- 宽度上限（用户拍板：1536）
   --
-  -- 【实测数据（关键）】
-  --   Session0 环境：getScreenWidth()=1024、MainForm.Width=799
-  --                  把面板 Width 设成 2000 能成功，但**实际渲染宽度只有 1038**
-  --                  → 说明 CE 窗体被**限制在 getScreenWidth() 附近**（1024+14 边框）
-  --   用户桌面会话：getScreenWidth()=3840、MainForm.Width=799、Font.Height=32
-  --
-  -- 【结论】虽然 getScreenWidth() 返回的是"物理像素"、语义上不干净，
-  --   但**实测它就是窗体宽度的实际上限** —— 所以拿它当上限是【正确】的。
-  --   之前我把它排除掉、改用固定 3600，结果 FW 算到 1758 而面板只能渲染 1038，
-  --   右侧按钮全被裁掉（用户截图证实「清除」按钮不见了）。
-  --
-  -- 【策略】
-  --   1) 上限 = getScreenWidth()（拿不到就用保守的 1024）
-  --   2) 压缩时给**名字列设保底**，绝不把标签压到截断
-  --   3) 异常状态的档位按钮已改成单字符 "0 / Ⅰ / Ⅱ / Ⅲ"，
-  --      宽度需求比原来的"设为N + 清除"省一半以上，更容易塞进屏幕
+  -- 实测依据：CE 窗体实际渲染宽度受屏幕限制
+  --   （getScreenWidth()=1024 时面板最多 1038，而布局按 1758 算 -> 右侧全看不见）。
+  -- 用户会话下 1536 能完整容纳所有控件，故固定取此值。
+  -- 压缩时：所有参与横向排布的宽度都要乘系数（漏一个就溢出），
+  --         且名字列设保底（绝不窄于最长标签所需）。
   -- ------------------------------------------------------------------
-  -- 用户 2026-09-20 明确指定：面板宽度上限取 1536。
-  -- 依据：用户会话下该宽度能完整容纳所有控件（含异常状态区的 4 个档位按钮），
-  --       且不会超出屏幕可用范围。**不要再用 getScreenWidth() 之类的猜测**。
   local MAXW = 1536
   if FW > MAXW then
     local k = MAXW / FW
     local minName = math.floor(estW(nameProbe, TH) * 1.25) + PAD * 2
     local function sq(v, mn) return math.max(mn or 24, math.floor(v * k)) end
-    -- 名字列保底：绝不窄于最长标签所需
-    W_NAME = math.max(minName, sq(W_NAME, 60))
-    W_NUM = sq(W_NUM, 50); W_EDIT = sq(W_EDIT, 60)
-    W_BTN = sq(W_BTN, 46); W_MINI = sq(W_MINI, 30); W_LOCK = sq(W_LOCK, 40)
-    -- ⚠️ 档位按钮宽也必须缩放，否则压缩后 4 个按钮会把右侧挤出面板
-    W_LVB = sq(W_LVB, 26)
-    GAP = sq(GAP, 6)
-    X_NAME = PAD
-    X_CUR  = X_NAME + W_NAME + GAP
-    X_EDIT = X_CUR + W_NUM + GAP
-    X_M1   = X_EDIT + W_EDIT + GAP
-    X_P1   = X_M1 + W_MINI + 4
-    X_BTN  = X_P1 + W_MINI + GAP
-    X_LOCK = X_BTN + W_BTN + GAP
-    -- 压缩后要【同时】满足数值行与家族区，取较大者（否则家族区按钮仍会溢出）
-    local fwRows = X_LOCK + W_LOCK + PAD
-    local fwFam  = PAD + W_NAME + GAP + W_NUM + GAP + 4 * (W_LVB + 6) + PAD
-    FW = math.max(fwRows, fwFam)
-    say(string.format('width capped by k=%.2f -> %d (MAXW %d, rows %d, fam %d)', k, FW, MAXW, fwRows, fwFam))
+    W_NAME  = math.max(minName, sq(W_NAME, 60))
+    W_NUM   = sq(W_NUM, 50)
+    W_EDIT  = sq(W_EDIT, 60)
+    W_APPLY = sq(W_APPLY, 40)
+    W_LVB   = sq(W_LVB, 26)
+    W_TBBTN = sq(W_TBBTN, 46)
+    GAP     = sq(GAP, 6)
+    X_NAME  = PAD
+    X_CUR   = X_NAME + W_NAME + GAP
+    X_ZERO  = X_CUR + W_NUM + GAP
+    X_MINUS = X_ZERO + SIDE + 4
+    X_PLUS  = X_MINUS + SIDE + 4
+    X_MAX   = X_PLUS + SIDE + 4
+    X_EDIT  = X_MAX + SIDE + GAP
+    X_APPLY = X_EDIT + W_EDIT + 6
+    X_LOCK  = X_APPLY + W_APPLY + GAP
+    local fwRows = X_LOCK + SIDE + PAD
+    local fwSw   = X_SWTOG + SIDE + GAP + sq(W_SWNOTE, 80) + PAD
+    local fwFam  = X_S1 + 4 * (W_LVB + 6) + PAD
+    FW = math.max(fwRows, fwSw, fwFam, PAD + W_TBBTN + PAD)
+    say(string.format('width capped by k=%.2f -> %d (rows %d sw %d fam %d)', k, FW, fwRows, fwSw, fwFam))
   else
     say(string.format('width not capped: FW=%d (MAXW %d)', FW, MAXW))
   end
 
-  say(string.format('metrics: textH=%d -> form %dx%d', TH, FW, FH))
+  say(string.format('metrics: textH=%d side=%d -> form %dx%d', TH, SIDE, FW, FH))
 
   f.Width = FW
   f.Height = FH
 
-  local y = PAD
-  mkLabel(f, X_NAME, y, W_NAME, LBL_H, '属性')
-  mkLabel(f, X_CUR,  y, W_NUM,  LBL_H, '当前')
-  mkLabel(f, X_EDIT, y, W_EDIT, LBL_H, '目标值')
-  mkLabel(f, X_LOCK, y, W_LOCK, LBL_H, '锁定')
+  local y = 0
+
+  -- ================================================================
+  -- 模块 1：工具条（修改器本体功能）
+  --   用户拍板：刷新这类"只属于工具本身"的功能放工具条，
+  --   与游戏修改功能分开排版，避免理解混淆。
+  --   预留位置：将来的"重新连接进程 / 检查连接 / 版本号 / 下载地址"放同一区。
+  --   注意：本版本不开发那些功能，只放「刷新」。
+  -- ================================================================
+  mkButton(f, PAD, math.floor(PAD / 2), W_TBBTN, SIDE, '刷新', refresh)
+  y = H_TBAR
+
+  -- ================================================================
+  -- 模块 2：数值修改
+  --   每行：[属性名] [当前值] [0] [-] [+] [MAX] [输入框] [应用] [锁定开关]
+  --   0 / - / + / MAX 是一组（直接改值）；输入框 + 应用 是一组（需提交）。
+  --   上限性质的项不显示 0（禁归零）；无上限概念的项不显示 MAX（但保留占位）。
+  -- ================================================================
+  local function sectionTitle(txt, yy)
+    local l = mkLabel(f, PAD, yy + math.floor(PAD / 2), FW - PAD * 2, LBL_H, txt)
+    pcall(function() l.Font.Style = 1 end)   -- 粗体，作分区标题
+    return l
+  end
+
+  sectionTitle('数值修改', y)
   y = y + HEAD_H
+  mkLabel(f, X_NAME, y - math.floor(PAD / 2), W_NAME, LBL_H, '属性')
+  mkLabel(f, X_CUR,  y - math.floor(PAD / 2), W_NUM,  LBL_H, '当前')
+  mkLabel(f, X_EDIT, y - math.floor(PAD / 2), W_EDIT + 6 + W_APPLY, LBL_H, '设定值')
+  mkLabel(f, X_LOCK, y - math.floor(PAD / 2), SIDE, LBL_H, '锁定')
+  y = y + math.floor(TH * 0.6)
 
   for i = 1, #WANT do
-    local k = WANT[i].key
-    -- 面板显示中文 label；CE 地址列表内部用 ASCII key（中文会让查找失效）
-    mkLabel(f, X_NAME, y + math.floor(PAD / 2) + 2, W_NAME, LBL_H, WANT[i].label)
-    local cur = mkLabel(f, X_CUR, y + math.floor(PAD / 2) + 2, W_NUM, LBL_H, '?')
-    local ed = mkEdit(f, X_EDIT, y, W_EDIT, LBL_H + 6)
-    mkButton(f, X_M1, y, W_MINI, BTN_H, '-', function() bump(k, -1) end)
-    mkButton(f, X_P1, y, W_MINI, BTN_H, '+', function() bump(k, 1) end)
-    mkButton(f, X_BTN, y, W_BTN, BTN_H, '写入', function() writeField(k) end)
-    local lk = mkButton(f, X_LOCK, y, W_LOCK, BTN_H, '□', function() toggleLock(k) end)
+    local it = WANT[i]
+    local k = it.key
+    mkLabel(f, X_NAME, y + math.floor(PAD / 2), W_NAME, LBL_H, it.label)
+    local cur = mkLabel(f, X_CUR, y + math.floor(PAD / 2), W_NUM, LBL_H, '?')
+
+    -- 0 按钮：仅"当前值"性质开放（用户拍板：上限性质隐藏，避免 HP上限=0 让游戏出错）
+    if not it.noZero then
+      mkSquareButton(f, X_ZERO, y, SIDE, '0', function() zeroVal(k) end)
+    else
+      -- 隐藏但保留占位：不创建控件即可，坐标天然留空
+    end
+    mkSquareButton(f, X_MINUS, y, SIDE, '-', function() bump(k, -1) end)
+    mkSquareButton(f, X_PLUS,  y, SIDE, '+', function() bump(k, 1) end)
+    -- MAX 按钮：仅定义了 maxKey 的项
+    if it.maxKey then
+      mkSquareButton(f, X_MAX, y, SIDE, 'MAX', function() maxVal(k) end)
+    end
+
+    local ed = mkEdit(f, X_EDIT, y + math.floor((SIDE - (LBL_H + 6)) / 2), W_EDIT, LBL_H + 6)
+    mkButton(f, X_APPLY, y, W_APPLY, SIDE, '应用', function() writeField(k) end)
+    local lk = mkLockToggle(f, X_LOCK, y, SIDE, function() toggleLock(k) end)
+
     ROWS[k] = { cur = cur, edit = ed, lock = lk }
     y = y + ROW_H
   end
+  y = y + PAD
 
-  ROWS._ratio = mkLabel(f, PAD, y, FW - PAD * 2, LBL_H, 'HP --')
-  y = y + TH + PAD
-  ROWS._info = mkLabel(f, PAD, y, FW - PAD * 2, LBL_H, '--')
-  y = y + TH + PAD
+  -- ================================================================
+  -- 模块 3：状态开关（无数值，只有 生效/不生效）
+  --   用户拍板：这类项目从"数值修改"里拿出来，单独一组，
+  --   控件用【开关】而不是"开/关"两个按钮（两个按钮既是重复入口又占宽度）。
+  -- ================================================================
+  sectionTitle('状态开关', y)
+  y = y + HEAD_H
+  for i = 1, #SWITCHES do
+    local sw = SWITCHES[i]
+    mkLabel(f, X_NAME, y + math.floor(PAD / 2), W_NAME, LBL_H, sw.label)
+    local tog = mkLockToggle(f, X_SWTOG, y, SIDE, function() toggleSwitch(sw.key) end)
+    mkLabel(f, X_SWTOG + SIDE + GAP, y + math.floor(PAD / 2), W_SWNOTE, LBL_H, sw.tip or '')
+    ROWS['sw_' .. sw.key] = tog
+    y = y + ROW_H
+  end
+  y = y + PAD
 
-  -- ------------------------------------------------------------------
-  -- 异常状态家族区（服从 / 淫乱 / 受虐倾向，各 1~3 级）
+  -- ================================================================
+  -- 模块 4：定值选项（带固定数值的互斥状态）
   --
-  -- 每行：家族名 | 当前等级 | [0] [Ⅰ] [Ⅱ] [Ⅲ]
-  -- 四个按钮就是四个档位（0 = 无/清除），比"设为1/2/3 + 清除"省一半宽度，
-  -- 语义也更直观。所有操作走 TrySetLevel / TryDowngrade（正规托管 API），
-  -- 且每次调用前由 familyOp 内部检查管道健康。
-  -- ------------------------------------------------------------------
-  ROWS._statusHead = mkLabel(f, PAD, y, FW - PAD * 2, LBL_H, '异常状态（点击档位按钮设置）')
-  y = y + TH + PAD
-
-  local X_LV  = PAD + W_NAME + GAP
-  local X_S1  = X_LV + W_NUM + GAP
-
+  -- ★ 命名规范（用户 2026-09-20 明确，指导后续所有项目）：
+  --   叫「定值选项」，**不是**「定制选项」。
+  --   含义：取值被游戏硬约束在一个有限集合内、彼此互斥、**不允许用户填入任意数值**
+  --         的选项 —— 例如异常状态等级只能是 0/Ⅰ/Ⅱ/Ⅲ。
+  --   控件形式：**每个取值一个按钮**（不用输入框），点哪个就是哪个。
+  --
+  --   与「数值修改」的区别：
+  --     数值修改 = 用户可填任意值（有输入框）
+  --     定值选项 = 取值由游戏限定，只能从给定档位里挑
+  -- ================================================================
+  sectionTitle('定值选项', y)
+  y = y + HEAD_H
   for i = 1, #FAMILIES do
     local fam = FAMILIES[i]
     local yRow = y
-    mkLabel(f, PAD, yRow + math.floor(PAD / 2) + 2, W_NAME, LBL_H, fam.cn)
-    local lvLbl = mkLabel(f, X_LV, yRow + math.floor(PAD / 2) + 2, W_NUM, LBL_H, '-')
+    mkLabel(f, PAD, yRow + math.floor(PAD / 2), W_NAME, LBL_H, fam.cn)
+    local lvLbl = mkLabel(f, X_LV, yRow + math.floor(PAD / 2), W_NUM, LBL_H, '-')
     fam.row = lvLbl
-    -- 四个档位按钮：0 / Ⅰ / Ⅱ / Ⅲ（0 表示清除）
     for lv = 0, 3 do
       local xb = X_S1 + lv * (W_LVB + 6)
-      local cap = (lv == 0) and '0' or LV_ROMAN[lv]
+      local cap = LV_ROMAN[lv]
       local target = lv
-      mkButton(f, xb, yRow, W_LVB, BTN_H, cap, function()
-        local ok, msg
+      mkButton(f, xb, yRow, W_LVB, SIDE, cap, function()
         if target == 0 then
-          -- 清除：逐级降级到 0（每步之间由 familyClear 内部复查管道）
           local n = familyClear(fam.id, 3)
           say(string.format('[status] %s 清除（降 %d 级）', fam.cn, n))
         else
-          ok, msg = familyOp(fam.id, 'set', target)
+          local ok, msg = familyOp(fam.id, 'set', target)
           say(string.format('[status] %s = %s : ok=%s %s', fam.cn, LV_ROMAN[target], tostring(ok), tostring(msg)))
         end
         refresh()
@@ -1184,8 +1336,13 @@ local function buildPanel()
     end
     y = y + ROW_H
   end
-  y = y + math.floor(PAD / 2)
+  y = y + PAD
 
+  -- ================================================================
+  -- 模块 5：底部一次性动作
+  --   用户拍板：这里【只放一次性动作】，不放任何锁定类按钮
+  --   （锁定唯一入口 = 各数值行的锁定开关）。
+  -- ================================================================
   local qx, qy = PAD, y
   for i = 1, #quick do
     if qx + qw[i] > FW - PAD then
@@ -1198,9 +1355,10 @@ local function buildPanel()
   local extra = (qy - y)
   if extra > 0 then
     f.Height = f.Height + extra
-    say(string.format('quick row wrapped, extra height = %d', extra))
   end
 
+  -- 面板关闭 = 退出修改器（与右上角 X 同一路径 —— 用户拍板去掉「关闭」按钮，
+  -- 因为两者功能完全一致，保留两处只会增加维护成本）
   f.OnClose = function(sender) quitTrainer() end
   pcall(function() f.centerScreen() end)
   say(string.format('panel built: %dx%d', f.Width, f.Height))
@@ -1210,9 +1368,7 @@ local function buildPanel()
   pcall(function() f.bringToFront() end)
 
   local lt = createTimer(MainForm, false)
-  lt.Interval = 500   -- ⚠️ 不能太快：tickLocks 里对性快感会调 setArouse（托管方法），
-                      --    实测高频连续调用托管方法有崩溃风险（见 familyOp 上方说明）。
-                      --    500ms（每秒 2 次）足以压制 decreasePerSecond 的自然递减。
+  lt.Interval = 500
   lt.OnTimer = function(sender) pcall(tickLocks) end
   lt.Enabled = true
   _G.nn_lock_timer = lt
