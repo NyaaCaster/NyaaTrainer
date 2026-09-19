@@ -55,9 +55,9 @@ cp config.example.yaml config.yaml
 
 **要点速览**
 
-- **① Mono 侦察**：为什么别一上来扫内存（4 理由 + 两项目效率对比）／核心 5 步（列程序集 → dump 类清单 → 按名字锁候选 → dump 字段偏移 → 沿引用链找实例）／**两种数据形态**（静态字段型 vs 实例字段型）／验证四步／9 条坑位／`淫白の御供` 实战记录
-- **② 稳定地址**：稳定条目三形态／7 步总流程／**方法 A** 写·读·执行断点（含数据断点 trap 语义）／**方法 B** 多级指针／**方法 C** Mono 静态字段 + `identify` 反查／**方法 D** GUI 指针扫描／两次筛选法／11 条踩坑
-- **③ 独立修改器**：格式逆向（`stub + PE 资源 ARCHIVE/DECOMPRESSOR`、`.cepack`）／**无 GUI 全自动生成**／11 个必打包文件／小面板 UI（含**四个"看着能用其实不能用"的 API**）／退出行为与残留进程／**DPI 陷阱**／14 条坑位
+- **① Mono 侦察**：为什么别一上来扫内存（4 理由 + 两项目效率对比）／核心 5 步（列程序集 → dump 类清单 → 按名字锁候选 → dump 字段偏移 → 沿引用链找实例）／**三种数据形态**（静态字段型 / 实例字段型有单例 / **实例字段型无单例 → UI 管理器兜底**）／验证四步／坑位表（20+ 条）／`淫白の御供` 与 `Nurtale Nesche` 实战记录／**§8 调用托管方法 `mono_invoke_method`**（含管道安全两道硬规矩）
+- **② 稳定地址**：稳定条目三形态／7 步总流程／**方法 A** 写·读·执行断点（含数据断点 trap 语义）／**方法 B** 多级指针／**方法 C** Mono 静态字段 + `identify` 反查（**§7.6 调托管方法**、**§10.1.1 无静态单例的实例字段路径**）／**方法 D** GUI 指针扫描／两次筛选法／踩坑表
+- **③ 独立修改器**：格式逆向（`stub + PE 资源 ARCHIVE/DECOMPRESSOR`、`.cepack`）／**无 GUI 全自动生成**／11 个必打包文件／小面板 UI（含**四个"看着能用其实不能用"的 API**、**任务栏显示**、`getControl(i)` 枚举控件）／退出行为与残留进程／**DPI 陷阱与尺寸 API 不可靠的实测数据**／20+ 条坑位／**§7.1 生成侧自检**（含 Lua 作用域自查）
 - **④ CE 通道**：三条通道（`ce-lua.ps1` 任意 Lua ／ `ce-mcp.ps1` 8 个成品工具 ／ `ce_mcp_server.py` 标准 MCP 服务端）／跨会话原理／各 Agent 客户端接入法／安全开关
 
 ---
@@ -70,6 +70,7 @@ cp config.example.yaml config.yaml
 | `src/ce-lua.ps1` | **主通道**：任意 Lua（多行/任意字符）→ 执行 → 取回文本 |
 | `src/ce-mcp.ps1` | 8 个成品工具（读/写内存、AOB 扫描、反汇编…），无 Python 依赖 |
 | `src/make_trainer.py` | **通用 trainer 生成器**：解 `.cepack` → 收文件 → 建归档 → 写 PE 资源 |
+| `src/check_lua_scope.py` | **Lua 作用域自查**：查「使用早于 local 声明」（这类 bug 不报错，极难排查） |
 | `src/CheatEngine-Manage.ps1` | CE 安装管理：Status / Sync / Migrate / Uninstall |
 | `lua/dsh_lib.lua` | CE 侧 Lua 往返桥（`dsh_out` / `dsh_eval` / `dsh_run_file`） |
 | `lua/dsh_stable.lua` | Mono **静态字段**稳定条目框架（`resolve` / `installAll` / `identify`） |
@@ -90,9 +91,16 @@ pcall(function() dofile(getCheatEngineDir() .. 'dsh_lib.lua') end)
 | 项目 | 表 | 数据形态 | 定位链 |
 |---|---|---|---|
 | `パンドラメイズ260427` | `examples/pandora/stable.CT` | **静态字段型** | `VariableF.currentSAN + 0x58`（JIT 内联静态地址） |
-| `淫白の御供` | `examples/iyohaku/stable.CT`<br>`examples/iyohaku/stable.lua` | **实例字段型** | `GameManager.Instance → +0x20 → GameData → +字段偏移` |
+| `淫白の御供` | `examples/iyohaku/stable.CT`<br>`examples/iyohaku/stable.lua` | **实例字段型**（有静态单例） | `GameManager.Instance → +0x20 → GameData → +字段偏移` |
+| `Nurtale Nesche` | `examples/nurtale/stable.CT`<br>`examples/nurtale/stable.lua` | **实例字段型 + 无静态单例**<br>+ **调托管方法改状态** | `GUIHUDManager.instance → healthGUI → health`<br>状态走 `TrySetLevel` / `SexualHeatManager.Set` |
 
-**两个样例正好覆盖两种形态** —— 新项目照着最像的那个改。
+**三个样例覆盖三种形态**：
+
+- **静态字段型**：数据挂 `static_data`，绝对地址被 JIT 内联 → 最省事
+- **实例字段型（有单例）**：从静态 `Instance` 沿引用链走
+- **实例字段型（无单例）+ 需调方法**：★ 最难的一类，`Nurtale Nesche` 是范例
+  —— 全程序集**没有任何静态字段**持有数据，只能从 **UI 管理器单例**兜底绕进去；
+  且有些数值**光写字段无效**（界面不刷新 / 被覆盖），必须**调用游戏自己的方法**。
 
 > `.CT` 与 `.CETRAINER` **是同一套 XML**，可直接喂给 `make_trainer.py`。
 
@@ -139,7 +147,11 @@ pcall(function() dofile(getCheatEngineDir() .. 'dsh_lib.lua') end)
 8. **两个 CE 不能同时附加同一游戏**：Mono 采集器 DLL 注入后不随 CE 退出而卸载。
 9. **自己启动的进程必须自己关**（§6）。
 10. **不要替用户关他在用的程序**（§7）。
-11. **面板尺寸必须在用户会话验证**：不同会话的字体度量可能差一倍（实测 `Font.Height` 21 vs 43），在非用户会话里看着正常的面板，用户那边可能大出一倍。
+11. **面板尺寸必须在用户会话验证**：不同会话的字体度量可能差一倍（实测 `Font.Height` 16 vs 32），在非用户会话里看着正常的面板，用户那边可能大出一倍。**`getScreenWidth()` 与 `MainForm.Width` 都不能当屏幕宽度用**（跨会话不一致），宽度由内容决定 + 固定上限 + 名字列保底。
+12. **⭐ 调托管方法前必须检查管道健康**：`mono_invoke_method` 走**每线程命名管道**，管道失效时继续调用会**让目标进程崩溃**（实测崩过两次）。调用前 `pipeOK()` 自检；**一次只做一个操作**；循环时每步复查；周期调用间隔 ≥200ms 并限流。详见 `docs/01-mono-recon.md` §8.4。
+13. **⭐ 绝不手工改托管容器的内部结构**：`Dictionary` / `List` 的 entries/buckets/count 一律**只读**。实测手工插条目并修好哈希链，数据层验证全对但**游戏崩溃**。要改就调游戏自己的方法，见 `docs/01-mono-recon.md` §8.5。
+14. **⭐ 共享变量声明在脚本最前面**：Lua 的 `local` 是**词法作用域** —— 函数定义时不可见的 local，在函数体里会退化成**读全局**（一边写 local、一边读 global，永远读不到，且**不报错**）。症状是"日志显示解析成功，运行却报未解析"。用 `src/check_lua_scope.py` 自查。
+15. **写字段没反应就去调方法**：回读值变了但**界面不刷新**（或被游戏覆盖回来）= 那个字段是**显示副本**。真源常在**父类**（`enumFields`/`enumMethods` **只列本类声明**，看不到继承的）。见 `docs/01-mono-recon.md` §8.6。
 
 ---
 

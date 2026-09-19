@@ -1,0 +1,1149 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable UsesMono="1" CheatEngineTableVersion="52">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"HP"</Description>
+      <VariableType>Float</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>2</ID>
+      <Description>"MaxHP"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>3</ID>
+      <Description>"HealthCap"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>4</ID>
+      <Description>"Stamina"</Description>
+      <VariableType>Float</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>5</ID>
+      <Description>"MaxStamina"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>6</ID>
+      <Description>"StaminaCap"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>7</ID>
+      <Description>"StamRestore"</Description>
+      <VariableType>Float</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>8</ID>
+      <Description>"Invincible"</Description>
+      <VariableType>Byte</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>9</ID>
+      <Description>"Arouse"</Description>
+      <VariableType>Float</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>10</ID>
+      <Description>"MaxArouse"</Description>
+      <VariableType>Float</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+  </CheatEntries>
+  <UserdefinedSymbols/>
+  <LuaScript>
+-- ===================================================================
+-- Nurtale Nesche —— 稳定地址自动解析 + 小面板修改器
+--
+-- 定位链（Unity Mono，实例字段型）：
+--     GUIHUDManager.instance        ★ 静态字段（唯一稳定锚点）
+--       + healthGUI   -> HealthCanvasManager
+--              + health -> Health
+--                     +0x60 maxHealth / +0x64 healthCap
+--                     +0x68 currentHealth        ← HP
+--                     +0x6C maxStamina / +0x70 staminaCap
+--                     +0x74 currentStamina       ← 体力
+--                     +0x78 staminaRestoreAmount
+--                     +0x88 IsUnDamagable        ← 无敌
+--       + arouseGaugeManager -> ArouseGaugeManager
+--                     +0x30 maxarouse / +0x34 currentarouse  ← 性快感
+--
+--   为什么不用 AOB：实测 AOB 依赖具体数值（35/80/45/80），游戏一升级改
+--   maxHealth 就失配。本链依赖「类名 + 字段偏移」，与数值无关。
+--   字段偏移全部从 mono_class_enumFields 动态取，不硬编码 —— 字段改名会
+--   明确报错，而不是静默读到垃圾值。
+--
+-- 关于性快感：真源未确定（写入会被游戏覆盖），故用 50ms 高频重写压制，
+--   实测可稳定显示。锁定按钮只管 HP / 体力。
+--
+-- 关于中文名：CE 地址列表的 Description 一律用 ASCII 内部键（key），
+--   面板显示用中文（label）—— 两者分离。原因：CE 记录名带中文时
+--   string.find 匹配不上（编码不一致），而脚本要靠 Description 找条目。
+--
+-- 排版：getScreenDPI() 恒回 96、fixDPI() 是空操作、Canvas.TextWidth 在
+--   CE 的 Lua 里是 nil —— 只有 Font.Height 可用。宽度封顶也不要用
+--   getScreenWidth()（它返回物理像素，与窗体逻辑像素差一倍），
+--   改用 CE 主窗口宽度做参照。
+-- ===================================================================
+
+local PROCESS_NAME = 'Nurtale Nesche.exe'
+local LOG_PATH = 'C:\\Windows\\Temp\\nurtale_trainer_log.txt'
+-- 字号 12：DSH(Session 0) 与用户会话的字体度量差约一倍
+-- （本机实测 Session0：16pt->43px；用户在样例里 16pt->21px）
+-- 取下限字号 + 按 CE 主窗口宽度封顶，保证在用户会话不超屏。
+local FS = 12
+
+local function say(s)
+  print('[NurtaleNesche] ' .. tostring(s))
+  pcall(function()
+    local f = io.open(LOG_PATH, 'a')
+    if f then
+      f:write(os.date('%H:%M:%S ') .. tostring(s) .. '\n')
+      f:close()
+    end
+  end)
+end
+
+pcall(function()
+  local f = io.open(LOG_PATH, 'w')
+  if f then f:write('=== Nurtale Nesche trainer ' .. os.date() .. ' ===\n'); f:close() end
+end)
+
+-- 数值项：内部键(ASCII，CE 条目用) / 面板中文显示名 / 所属对象 / 类内字段名 / 类型
+local WANT = {
+  { key = 'HP',          label = 'HP',         obj = 'HEALTH', field = 'currentHealth',        vt = 'float' },
+  { key = 'MaxHP',       label = 'HP上限',      obj = 'HEALTH', field = 'maxHealth',            vt = 'int'   },
+  { key = 'HealthCap',   label = 'HP硬上限',    obj = 'HEALTH', field = 'healthCap',            vt = 'int'   },
+  { key = 'Stamina',     label = '体力',        obj = 'HEALTH', field = 'currentStamina',       vt = 'float' },
+  { key = 'MaxStamina',  label = '体力上限',    obj = 'HEALTH', field = 'maxStamina',           vt = 'int'   },
+  { key = 'StaminaCap',  label = '体力硬上限',  obj = 'HEALTH', field = 'staminaCap',           vt = 'int'   },
+  { key = 'StamRestore', label = '恢复速度',    obj = 'HEALTH', field = 'staminaRestoreAmount', vt = 'float' },
+  { key = 'Invincible',  label = '无敌模式',    obj = 'HEALTH', field = 'IsUnDamagable',        vt = 'int'   },
+  { key = 'Arouse',      label = '性快感',      obj = 'GAUGE',  field = 'currentarouse',        vt = 'float' },
+  { key = 'MaxArouse',   label = '快感上限',    obj = 'GAUGE',  field = 'maxarouse',            vt = 'float' },
+}
+
+local HEALTH_CLASS = 'Health'
+local GAUGE_CLASS  = 'ArouseGaugeManager'
+
+-- ------------------------------------------------------------------
+-- 共享状态（必须先声明，再被下面的函数引用）
+--
+-- ⚠️ 踩过的坑：PLAYER_ADDR 原先声明在 apply() 附近（文件后段），
+--   而 familyService() 在文件前段就引用了它。Lua 的 local 是【词法作用域】——
+--   familyService 定义时该 local 还不存在，于是它读到的是【全局】_G.PLAYER_ADDR
+--   （永远是 nil），而 apply() 写的是那个 local。
+--   症状极隐蔽：日志里 "Player = XXXX" 明明解析成功，点按钮却报 "Player 未解析"。
+--   正解：把共享变量统一声明在文件最前面。
+-- ------------------------------------------------------------------
+local ADDR = {}          -- 数值条目：key -> 绝对地址
+local ROWS = {}          -- 面板控件引用
+local PLAYER_ADDR = nil  -- ★ Player 实例地址（apply 解析后填入）
+local panel = nil
+local tries = 0
+local diagDone = false
+local needRescan = false
+local rescans = 0
+
+-- ===================================================================
+-- 三个异常状态家族（服从 / 淫乱 / 受虐倾向），各 1~3 级
+--
+-- 只用正规托管 API，**绝不手工改 Dictionary 内部结构**
+--   （2026-09-20 曾因手工改 _active 哈希表导致游戏崩溃）
+--
+-- 关键安全机制（也是崩溃换来的教训）：
+--   mono_invoke_method 走【每线程命名管道】通信。管道失效时若继续调用，
+--   会把垃圾写进管道 -> 采集器解析出错 -> 目标进程崩溃。
+--   所以：**调用前必须 pipeOK()，不健康就拒绝调用**。
+--
+-- 验证过的可用方法：
+--   ProgressiveStatusFamilyService.TrySetLevel(familyId, level)  -- 设等级
+--   ProgressiveStatusFamilyService.TryDowngrade(familyId)        -- 降一级
+-- ===================================================================
+
+local FAMILIES = {
+  { id = 'obedience',   cn = '服从',     row = nil },
+  { id = 'nymphomania', cn = '淫乱',     row = nil },
+  { id = 'masochism',   cn = '受虐倾向', row = nil },
+}
+
+-- 管道健康检查：返回 true 才能调用托管方法
+local function pipeOK()
+  if type(libmono) ~= 'table' then return false, 'libmono missing' end
+  if libmono.abort then return false, 'libmono.abort' end
+  if libmono.MDC_ShuttingDownAddress then
+    local sd = readInteger(libmono.MDC_ShuttingDownAddress)
+    if sd == nil or sd ~= 0 then return false, 'MDC shutting down' end
+  end
+  if type(libmono.monopipes) ~= 'table' then return false, 'no monopipes' end
+  local p = libmono.monopipes[getCurrentThreadID()]
+  if p == nil then return false, 'no pipe for thread' end
+  if p.Connected == false then return false, 'pipe disconnected' end
+  if libmono.monopipe == nil then return false, 'monopipe nil' end
+  return true
+end
+
+local function clsNameOf(p)
+  if not p or p == 0 then return 'nil' end
+  local n = nil
+  pcall(function() n = mono_class_getName(mono_object_getClass(p)) end)
+  if not n or n:find('[%z\1-\31]') then return 'nil' end
+  return n
+end
+
+-- 把 64 位地址拆成 8 个小端字节，拼成 AOB 模式串。
+-- 刻意不用位运算的与操作（XML 里该字符需转义，裸写会让 XML 解析器失败）；
+-- 改用取模/取整：byte = floor(addr / 256^i) % 256
+local function findPtrTo(addr)
+  local b = {}
+  local v = addr
+  for i = 0, 7 do
+    b[#b+1] = string.format('%02X', v % 256)
+    v = math.floor(v / 256)
+  end
+  return AOBScan(table.concat(b, ' '))
+end
+
+-- 解析 ProgressiveStatusFamilyService（复用 Player 链）
+local function familyService()
+  local p = PLAYER_ADDR
+  if not p or p == 0 then return nil, 'Player 未解析' end
+  local semOff = 0x168
+  local c = mono_findClass('PlayerGroup', 'Player')
+  if c and c ~= 0 then
+    for _, f in ipairs(mono_class_enumFields(c)) do
+      if f.name == 'StatusEffectManager' then semOff = f.offset end
+    end
+  end
+  local sem = readPointer(p + semOff)
+  if not sem or sem == 0 then return nil, 'SEM nil' end
+  local svcOff = 0x68
+  local c2 = mono_findClass('', 'StatusEffectManager')
+  if c2 and c2 ~= 0 then
+    for _, f in ipairs(mono_class_enumFields(c2)) do
+      if f.name == '_progressiveFamilies' then svcOff = f.offset end
+    end
+  end
+  local svc = readPointer(sem + svcOff)
+  if not svc or svc == 0 then return nil, 'service nil' end
+  return svc, nil, sem
+end
+
+-- 只读遍历托管字典（绝不写）
+local function readDict(dict)
+  local res = {}
+  if not dict or dict == 0 then return res end
+  local cnt = readInteger(dict + 0x40)
+  if not cnt then return res end
+  if cnt > 100000 then return res end
+  if cnt > 0 then else return res end
+  local entries = readPointer(dict + 0x18)
+  if not entries or entries == 0 then return res end
+  local arrLen = readInteger(entries + 0x18)
+  if not arrLen then return res end
+  if arrLen > 100000 then return res end
+  if arrLen > 0 then else return res end
+  local base = entries + 0x20
+  for i = 0, arrLen - 1 do
+    local e = base + i * 0x18
+    local kp = readPointer(e + 0x08)
+    local vp = readPointer(e + 0x10)
+    if kp and kp ~= 0 and vp and vp ~= 0 then
+      local k = nil
+      pcall(function() k = readString(kp + 0x14, 128, true) end)
+      if k and k ~= '' then res[#res + 1] = k end
+    end
+  end
+  return res
+end
+
+-- 读三个家族的当前等级（0 = 无）
+local function familyLevels()
+  local svc, err, sem = familyService()
+  if not svc then return nil, err end
+  local semCls = mono_findClass('', 'StatusEffectManager')
+  local actOff = 0x88
+  if semCls and semCls ~= 0 then
+    for _, f in ipairs(mono_class_enumFields(semCls)) do
+      if f.name == '_active' then actOff = f.offset end
+    end
+  end
+  local d = readPointer(sem + actOff)
+  local ids = readDict(d)
+  local set = {}
+  for _, k in ipairs(ids) do set[k] = true end
+  local res = {}
+  for _, fam in ipairs(FAMILIES) do
+    local lvl = 0
+    for i = 1, 3 do
+      if set['status_effect.' .. fam.id .. '.' .. i] then lvl = i end
+    end
+    res[fam.id] = lvl
+  end
+  return res
+end
+
+local function findMethod(clsN, mName)
+  local c = mono_findClass('', clsN)
+  if not c or c == 0 then return nil, 'no class ' .. clsN end
+  local ms = mono_class_enumMethods(c)
+  if not ms then return nil, 'no methods' end
+  for i = 1, #ms do
+    if ms[i].name == mName then return ms[i].method end
+  end
+  return nil, 'no method ' .. mName
+end
+
+--[[
+  单次操作。action: 'set' (level 1~3) 或 'down' (降一级)
+  返回 ok, msg。**只做一次托管调用**，调用方负责循环与复查。
+]]
+local function familyOp(famId, action, level)
+  local pk, why = pipeOK()
+  if not pk then return false, '管道不健康，拒绝调用: ' .. tostring(why) end
+
+  local dms = mono_enumDomains()
+  local dom = dms and dms[1]
+  if not dom then return false, 'no mono domain' end
+  local svc, err = familyService()
+  if not svc then return false, 'service 解析失败: ' .. tostring(err) end
+
+  local mName = (action == 'down') and 'TryDowngrade' or 'TrySetLevel'
+  local m, e2 = findMethod('ProgressiveStatusFamilyService', mName)
+  if not m then return false, tostring(e2) end
+  local fs = mono_new_string(dom, famId)
+  if not fs or fs == 0 then return false, 'mono_new_string 失败' end
+
+  local args
+  if action == 'down' then
+    args = { fs }
+  else
+    args = { fs, level }
+  end
+  local ok, r = pcall(mono_invoke_method, dom, m, svc, args)
+  if not ok then return false, 'invoke 失败: ' .. tostring(r) end
+  return true, string.format('%s(%s%s) -> %s', mName, famId,
+    (action == 'down') and '' or (',' .. tostring(level)), tostring(r))
+end
+
+-- 清除到 0 级：分步降级，每步之间复查管道（绝不在一个循环里猛调）
+local function familyClear(famId, maxSteps)
+  maxSteps = maxSteps or 3
+  local n = 0
+  for i = 1, maxSteps do
+    local lv = familyLevels()
+    if not lv then break end
+    -- 用 > 表达，避免裸尖括号（.CT 是 XML，裸尖括号会让脚本静默不执行）
+    if lv[famId] > 0 then else break end
+    local ok = familyOp(famId, 'down')
+    if not ok then break end
+    n = n + 1
+  end
+  return n
+end
+
+-- ===================================================================
+-- 性快感：必须走 SexualHeatManager.Set()，不能直接写字段
+--
+-- 血泪教训（改了很多轮才明白）：
+--   ArouseGaugeManager.currentarouse 只是【显示副本】。直接写它：
+--     - 值确实变了（回读能看到）
+--     - 但【界面不动】，而且游戏下一次推送就把它覆盖回来
+--   原因：UI 刷新靠事件通知，写字段不触发事件。
+--
+-- 真源在 SexualHeatManager._heat（@+0x40）。继承链实测：
+--     PlayerSexualArousalManager
+--       ↑ CaptiveSexualHeatManager
+--           ↑ SexualHeatManager        ← _heat 在这里
+--               ↑ MonoBehaviour
+--   而 Player.SexualHeatManager (@+0x1B8) 拿到的是 PlayerSexualArousalManager 实例，
+--   所以 _heat 实际就在 PSA 实例的 +0x40 —— 这也解释了那块"字段表外的数值区"。
+--
+-- 正解：调用父类 SexualHeatManager 的 Set(value)。
+--   一次调用同时完成：写 _heat + 触发 OnValueChange + UI 自动同步（实测两层都变）。
+--   注意 CE 的 mono_class_enumMethods 只列【本类声明】的方法，不含继承的，
+--   所以必须用 mono_findClass('','SexualHeatManager') 取到 Set。
+-- ===================================================================
+
+-- 拿到 PSA(PlayerSexualArousalManager) 实例地址
+local function arousalHolder()
+  if not PLAYER_ADDR or PLAYER_ADDR == 0 then return nil, 'Player 未解析' end
+  local off = 0x1B8
+  local c = mono_findClass('PlayerGroup', 'Player')
+  if c and c ~= 0 then
+    for _, f in ipairs(mono_class_enumFields(c)) do
+      if f.name == 'SexualHeatManager' then off = f.offset end
+    end
+  end
+  local psa = readPointer(PLAYER_ADDR + off)
+  if not psa or psa == 0 then return nil, 'PlayerSexualArousalManager 为 nil' end
+  return psa
+end
+
+-- 设置性快感值（走正规 Set 方法）。返回 ok, msg
+--
+-- ⚠️ 内置限流：同一值在 MIN_GAP 毫秒内不重复调用。
+--    原因：tickLocks 会周期性重设快感值，若间隔太短就成了"高频连续调用托管方法"，
+--    实测这种模式有崩溃风险。限流保证最坏情况下也是安全频率。
+local AROUSE_LAST_T = 0
+local AROUSE_LAST_V = nil
+local AROUSE_MIN_GAP = 200
+
+local function setArouse(value)
+  local now = getTickCount()
+  -- 写成 > 的形式，避免裸尖括号
+  if AROUSE_LAST_V == value and AROUSE_MIN_GAP > (now - AROUSE_LAST_T) then
+    return true, 'throttled'
+  end
+  AROUSE_LAST_T = now
+  AROUSE_LAST_V = value
+
+  local pk, why = pipeOK()
+  if not pk then return false, '管道不健康: ' .. tostring(why) end
+  local psa, err = arousalHolder()
+  if not psa then return false, tostring(err) end
+  local setM, e2 = findMethod('SexualHeatManager', 'Set')
+  if not setM then return false, tostring(e2) end
+  local dms = mono_enumDomains()
+  local dom = dms and dms[1]
+  if not dom then return false, 'no mono domain' end
+  local ok, r = pcall(mono_invoke_method, dom, setM, psa, { value })
+  if not ok then return false, 'invoke 失败: ' .. tostring(r) end
+  return true, string.format('Set(%.2f) -> %s', value, tostring(r))
+end
+
+-- 读性快感真源（只读，不用管道）
+local function getArouseHeat()
+  local psa = arousalHolder()
+  if not psa then return nil end
+  return readFloat(psa + 0x40)
+end
+
+-- （ADDR / ROWS / PLAYER_ADDR 等共享变量已声明在文件开头，此处不再重复声明）
+
+local function diag()
+  diagDone = true
+  say('CE dir = ' .. tostring(getCheatEngineDir()))
+  local mods = enumModules()
+  local found = 0
+  for k, m in pairs(mods) do
+    if tostring(m.Name):find('MonoDataCollector') then
+      found = found + 1
+      say(string.format('mono module: %s @ %X', tostring(m.Name), m.Address))
+    end
+  end
+  if found == 0 then say('mono module: not loaded yet') end
+end
+
+local function ensureMono()
+  if mono_AttachedProcess and mono_AttachedProcess ~= 0 then return true end
+  if not mono_findClass then
+    pcall(function() dofile(getCheatEngineDir() .. 'autorun\\monoscript.lua') end)
+    pcall(function() reinitializeSymbolhandler(true) end)
+  end
+  if needRescan then
+    needRescan = false
+    if rescans > 3 then
+      -- 已达重扫上限
+    else
+      rescans = rescans + 1
+      pcall(function() reinitializeSymbolhandler(true) end)
+    end
+  end
+  if LaunchMonoDataCollector then
+    pcall(LaunchMonoDataCollector)
+    needRescan = true
+  end
+  return false
+end
+
+-- ---------------------------------------------------------------- 解析
+local function staticBase(clsName)
+  local dms = mono_enumDomains()
+  local domain = dms and dms[1]
+  if not domain then return nil, 'no mono domain' end
+  local cls = mono_findClass('', clsName)
+  if not cls or cls == 0 then return nil, 'class not found: ' .. clsName end
+  local base = nil
+  pcall(function() base = mono_class_getStaticFieldAddress(domain, cls) end)
+  if not base or base == 0 then return nil, 'no static area for ' .. clsName end
+  return base
+end
+
+-- 按字段名取偏移（wantStatic: true=静态字段, false=实例字段）
+local function fieldOffset(clsName, fieldName, wantStatic)
+  local cls = mono_findClass('', clsName)
+  if not cls or cls == 0 then return nil, 'class not found: ' .. clsName end
+  local fds = mono_class_enumFields(cls)
+  if not fds then return nil, 'field enum failed: ' .. clsName end
+  local i
+  for i = 1, #fds do
+    local f = fds[i]
+    if f.name == fieldName then
+      if wantStatic and not f.isStatic then return nil, fieldName .. ' not static' end
+      if (not wantStatic) and f.isStatic then return nil, fieldName .. ' is static' end
+      return f.offset
+    end
+  end
+  return nil, 'field not found: ' .. clsName .. '.' .. fieldName
+end
+
+-- GUIHUDManager.instance（静态单例）
+local function hudManager()
+  local base, err = staticBase('GUIHUDManager')
+  if not base then return nil, err end
+  local off, err2 = fieldOffset('GUIHUDManager', 'instance', true)
+  if not off then return nil, err2 end
+  local v = readPointer(base + off)
+  if not v or v == 0 then return nil, 'GUIHUDManager.instance is null (未进场景?)' end
+  return v
+end
+
+local function healthObject()
+  local hud, err = hudManager()
+  if not hud then return nil, err end
+  local o1, e1 = fieldOffset('GUIHUDManager', 'healthGUI', false)
+  if not o1 then return nil, e1 end
+  local hc = readPointer(hud + o1)
+  if not hc or hc == 0 then return nil, 'healthGUI is null' end
+  local o2, e2 = fieldOffset('HealthCanvasManager', 'health', false)
+  if not o2 then return nil, e2 end
+  local h = readPointer(hc + o2)
+  if not h or h == 0 then return nil, 'Health is null' end
+  return h
+end
+
+local function gaugeObject()
+  local hud, err = hudManager()
+  if not hud then return nil, err end
+  local o, e = fieldOffset('GUIHUDManager', 'arouseGaugeManager', false)
+  if not o then return nil, e end
+  local g = readPointer(hud + o)
+  if not g or g == 0 then return nil, 'arouseGaugeManager is null' end
+  return g
+end
+
+local function objFor(name)
+  if name == 'HEALTH' then return healthObject() end
+  if name == 'GAUGE'  then return gaugeObject()  end
+  return nil, 'unknown obj: ' .. tostring(name)
+end
+
+local function resolve(key)
+  local i
+  for i = 1, #WANT do
+    local it = WANT[i]
+    if it.key == key then
+      local obj, err = objFor(it.obj)
+      if not obj then return nil, err end
+      local cls = (it.obj == 'HEALTH') and HEALTH_CLASS or GAUGE_CLASS
+      local off, e2 = fieldOffset(cls, it.field, false)
+      if not off then return nil, e2 end
+      return obj + off
+    end
+  end
+  return nil, 'unknown key: ' .. tostring(key)
+end
+
+local function rd(it, a)
+  if it.vt == 'float' then return readFloat(a) end
+  return readInteger(a)
+end
+
+local function wr(it, a, v)
+  if it.vt == 'float' then writeFloat(a, v) else writeInteger(a, v) end
+end
+
+local function apply()
+  local al = getAddressList()
+  local n, firstErr = 0, nil
+  local i
+  for i = 1, #WANT do
+    local it = WANT[i]
+    local a, err = resolve(it.key)
+    if a then
+      ADDR[it.key] = a
+      n = n + 1
+      local mr = nil
+      local j
+      for j = 0, al.Count - 1 do
+        local m = al.getMemoryRecord(j)
+        if m.Description == it.key then mr = m break end
+      end
+      if mr == nil then mr = al.createMemoryRecord() end
+      mr.Description = it.key
+      if it.vt == 'float' then mr.Type = vtSingle else mr.Type = vtDword end
+      mr.Address = string.format('%X', a)
+    else
+      if firstErr == nil then firstErr = err end
+    end
+  end
+
+  -- 解析 Player（三个异常状态家族要从 Player -> StatusEffectManager 走）
+  -- 链路：Health --(搜指向它的指针)--> PlayerHealthManager --(+0xD8)--> Player
+  PLAYER_ADDR = nil
+  local hObj = nil
+  pcall(function() hObj = healthObject() end)
+  if hObj and hObj ~= 0 then
+    local h1 = findPtrTo(hObj)
+    if h1 then
+      for k = 0, h1.Count - 1 do
+        local mgr = getAddress(h1[k]) - 0x20
+        if clsNameOf(mgr) == 'PlayerHealthManager' then
+          local h2 = findPtrTo(mgr)
+          if h2 then
+            for m2 = 0, h2.Count - 1 do
+              local p = getAddress(h2[m2]) - 0xD8
+              if clsNameOf(p) == 'Player' then PLAYER_ADDR = p break end
+            end
+          end
+          break
+        end
+      end
+    end
+  end
+  if PLAYER_ADDR then
+    say(string.format('Player = %X', PLAYER_ADDR))
+  else
+    say('Player 未解析 —— 异常状态家族功能不可用')
+  end
+
+  say(string.format('resolved %d/%d entries', n, #WANT))
+  if n == 0 then return 0, firstErr end
+  return n
+end
+
+-- ---------------------------------------------------------------- 退出
+local function quitTrainer()
+  pcall(closeCE)
+end
+
+pcall(function()
+  if MainForm ~= nil then
+    local prev = MainForm.OnClose
+    MainForm.OnClose = function(sender)
+      if prev then pcall(prev, sender) end
+    end
+  end
+end)
+
+-- ---------------------------------------------------------------- 锁定
+local LOCKS = {}
+local LOCKVAL = {}
+local AROUSE_LOCK = false
+local AROUSE_VAL = 0
+
+local function tickLocks()
+  local i
+  for i = 1, #WANT do
+    local k = WANT[i].key
+    if LOCKS[k] and ADDR[k] and LOCKVAL[k] then
+      local it = WANT[i]
+      local cur = rd(it, ADDR[k])
+      if cur ~= LOCKVAL[k] then wr(it, ADDR[k], LOCKVAL[k]) end
+    end
+  end
+  -- 性快感：走 setArouse（正规 Set 方法，UI 会同步）
+  -- 注意：真源一旦设定，游戏仍会按 decreasePerSecond 自然递减，
+  --       所以要"锁定"就得周期重设 —— 但重设也要走正规方法。
+  if AROUSE_LOCK then
+    pcall(function() setArouse(AROUSE_VAL) end)
+  end
+end
+
+-- ---------------------------------------------------------------- 面板
+local function refresh()
+  local i
+  for i = 1, #WANT do
+    local it = WANT[i]
+    local k = it.key
+    local a = ADDR[k]
+    local r = ROWS[k]
+    if r and a then
+      local v
+      if LOCKS[k] then
+        v = LOCKVAL[k]
+      elseif k == 'Arouse' then
+        -- 性快感显示真源（SexualHeatManager._heat），而不是 UI 副本
+        local hv = nil
+        pcall(function() hv = getArouseHeat() end)
+        v = hv or rd(it, a)
+      else
+        v = rd(it, a)
+      end
+      if v == nil then v = -1 end
+      if it.vt == 'float' then
+        r.cur.Caption = string.format('%.2f', v)
+      else
+        r.cur.Caption = tostring(v)
+      end
+      if r.lock then
+        r.cur.Font.Color = LOCKS[k] and 0x0020A0FF or 0x00FFFFFF
+      end
+    end
+  end
+  local hp = ADDR.HP and readFloat(ADDR.HP)
+  local mx = ADDR.MaxHP and readInteger(ADDR.MaxHP)
+  if ROWS._ratio and hp and mx and mx > 0 then
+    ROWS._ratio.Caption = string.format('HP %.1f%%   %.2f / %d', hp / mx * 100, hp, mx)
+  end
+  local st = ADDR.Stamina and readFloat(ADDR.Stamina)
+  local sm = ADDR.MaxStamina and readInteger(ADDR.MaxStamina)
+  local ar = ADDR.Arouse and readFloat(ADDR.Arouse)
+  local parts = {}
+  if st and sm and sm > 0 then
+    parts[#parts + 1] = string.format('体力 %.1f%%', st / sm * 100)
+  end
+  if ar then parts[#parts + 1] = string.format('性快感 %.2f', ar) end
+  if ROWS._info then ROWS._info.Caption = table.concat(parts, '    ') end
+
+  -- 三个异常状态家族的当前等级
+  if PLAYER_ADDR then
+    local lv = nil
+    pcall(function() lv = familyLevels() end)
+    if lv then
+      for i = 1, #FAMILIES do
+        local fam = FAMILIES[i]
+        if fam.row then
+          local v = lv[fam.id] or 0
+          if v > 0 then
+            fam.row.Caption = tostring(v) .. ' 级'
+            pcall(function() fam.row.Font.Color = 0x0040C0FF end)
+          else
+            fam.row.Caption = '无'
+            pcall(function() fam.row.Font.Color = 0x00808080 end)
+          end
+        end
+      end
+    end
+  end
+end
+
+local function setVal(k, v)
+  -- 性快感特例：必须走 SexualHeatManager.Set()，直接写字段 UI 不动
+  -- （详见 setArouse 上方的说明）
+  if k == 'Arouse' then
+    local ok, msg = setArouse(v)
+    if not ok then say('[arouse] 设置失败: ' .. tostring(msg)) end
+    return
+  end
+  local a = ADDR[k]
+  if a == nil then return end
+  local i
+  for i = 1, #WANT do
+    if WANT[i].key == k then wr(WANT[i], a, v) return end
+  end
+end
+
+local function getVal(k)
+  local a = ADDR[k]
+  if a == nil then return 0 end
+  local i
+  for i = 1, #WANT do
+    if WANT[i].key == k then return rd(WANT[i], a) end
+  end
+  return 0
+end
+
+local function toggleLock(k)
+  local r = ROWS[k]
+  if r == nil or ADDR[k] == nil then return end
+  if LOCKS[k] then
+    LOCKS[k] = false
+    LOCKVAL[k] = nil
+    if r.lock then r.lock.Caption = '□' end
+    say('unlock ' .. k)
+  else
+    local v = tonumber(r.edit.Text)
+    if v == nil then v = getVal(k) end
+    if WANT[1].key == k then
+      -- float 项不取整
+    else
+      v = math.floor(v)
+    end
+    LOCKS[k] = true
+    LOCKVAL[k] = v
+    setVal(k, v)
+    r.edit.Text = ''
+    if r.lock then r.lock.Caption = '■' end
+    say(string.format('lock %s = %s', k, tostring(v)))
+  end
+  refresh()
+end
+
+local function bump(k, d)
+  local a = ADDR[k]
+  if a == nil then return end
+  local base = LOCKS[k] and LOCKVAL[k] or getVal(k)
+  local v = base + d
+  setVal(k, v)
+  if LOCKS[k] then LOCKVAL[k] = v end
+  refresh()
+end
+
+local function writeField(k)
+  local r = ROWS[k]
+  if r == nil then return end
+  local v = tonumber(r.edit.Text)
+  if v == nil then r.cur.Caption = '无效' return end
+  -- int 项取整；float 项保留小数（HP / 体力 / 性快感都是 float）
+  local i
+  local isFloat = false
+  for i = 1, #WANT do
+    if WANT[i].key == k and WANT[i].vt == 'float' then isFloat = true end
+  end
+  if not isFloat then v = math.floor(v) end
+  setVal(k, v)
+  if LOCKS[k] then LOCKVAL[k] = v end
+  r.edit.Text = ''
+  refresh()
+end
+
+local function setFont(c)
+  pcall(function() c.Font.Size = FS end)
+end
+
+local function mkLabel(owner, x, y, w, h, cap)
+  local l = createLabel(owner)
+  l.Left = x; l.Top = y; l.Width = w; l.Height = h; l.Caption = cap
+  setFont(l)
+  return l
+end
+
+local function mkEdit(owner, x, y, w, h)
+  local e = createEdit(owner)
+  e.Left = x; e.Top = y; e.Width = w; e.Height = h; e.Text = ''
+  setFont(e)
+  return e
+end
+
+local function mkButton(owner, x, y, w, h, cap, fn)
+  local b = createButton(owner)
+  b.Left = x; b.Top = y; b.Width = w; b.Height = h; b.Caption = cap
+  b.OnClick = function(sender) pcall(fn) end
+  setFont(b)
+  return b
+end
+
+-- 按字高保守估算文字宽度。
+--   汉字实际宽度 ≈ 1 个字高（CE 默认字体下混排时略宽），故系数取 1.35
+--   （原为 1.15，实测在用户会话会把「体力硬上限」这类 5 字标签算窄、导致截断）。
+local function estW(s, th)
+  local hi = 0
+  local i
+  for i = 1, #s do if s:byte(i) > 127 then hi = hi + 1 end end
+  local wide = hi / 3
+  local ascii = #s - hi
+  return math.floor(ascii * th * 0.62 + wide * th * 1.35 + 0.5)
+end
+
+local function buildPanel()
+  if panel ~= nil then return end
+  pcall(hideAllCEWindows)
+
+  local f = createForm(false)
+  pcall(function() f.DoNotSaveInTable = true end)
+  f.Caption = 'Nurtale Nesche 修改器'
+  -- ------------------------------------------------------------------
+  -- 任务栏显示（用户要求）
+  --
+  -- CE 的 createForm 默认 ShowInTaskbar = stDefault，面板不进任务栏，
+  -- 切游戏/修改器只能靠 Alt+Tab，还容易误触游戏快捷键 —— 很麻烦。
+  --
+  -- 设成 stAlways(1) 即可进任务栏。
+  -- 注意：LCL 的枚举常量（stAlways 等）在 CE 的 Lua 全局里【不存在】
+  --   （是 nil），直接写 f.ShowInTaskbar = stAlways 会静默失败
+  --   （回读仍是 stDefault）。必须用数字：0=stDefault 1=stAlways 2=stNever。
+  -- ------------------------------------------------------------------
+  pcall(function() f.ShowInTaskbar = 1 end)
+  setFont(f)
+
+  local TH = math.floor(FS * 1.4)
+  pcall(function()
+    local probe = createEdit(f)
+    setFont(probe)
+    local v = probe.Font.Height
+    if type(v) == 'number' then TH = math.abs(v) end
+    probe.destroy()
+  end)
+
+  local PAD  = 14
+  local GAP  = 12
+  -- 名字列宽度：按【最长的中文 label】动态算（不用写死字面量）
+  local nameProbe = ''
+  do
+    local q
+    for q = 1, #WANT do
+      if #WANT[q].label > #nameProbe then nameProbe = WANT[q].label end
+    end
+  end
+  local W_NAME = math.floor(estW(nameProbe, TH) * 1.35) + PAD * 2
+  local W_NUM  = math.floor(estW('9999.99', TH) * 1.70) + PAD * 2
+  local W_EDIT = W_NUM + PAD * 2
+  local W_BTN  = math.floor(estW('写入', TH) * 1.70) + PAD * 2
+  local W_MINI = math.floor(estW('+', TH) * 3.2) + PAD
+  local W_LOCK = math.floor(estW('■', TH) * 3.4) + PAD
+  local LBL_H  = TH + 8
+  local BTN_H  = TH + PAD * 2
+  local ROW_H  = TH + PAD * 2 + 10
+  local HEAD_H = TH + PAD * 2
+  local X_NAME = PAD
+  local X_CUR  = X_NAME + W_NAME + GAP
+  local X_EDIT = X_CUR + W_NUM + GAP
+  local X_M1   = X_EDIT + W_EDIT + GAP
+  local X_P1   = X_M1 + W_MINI + 4
+  local X_BTN  = X_P1 + W_MINI + GAP
+  local X_LOCK = X_BTN + W_BTN + GAP
+  local FW_ROW = X_LOCK + W_LOCK + PAD
+
+  local quick = {
+    { cap = 'HP 全满', fn = function()
+        setVal('HP', getVal('MaxHP')); if LOCKS.HP then LOCKVAL.HP = getVal('MaxHP') end; refresh()
+      end },
+    { cap = '体力全满', fn = function()
+        setVal('Stamina', getVal('MaxStamina')); if LOCKS.Stamina then LOCKVAL.Stamina = getVal('MaxStamina') end; refresh()
+      end },
+    { cap = '无敌开', fn = function() setVal('Invincible', 1); refresh() end },
+    { cap = '无敌关', fn = function() setVal('Invincible', 0); refresh() end },
+    { cap = '恢复x10', fn = function()
+        setVal('StamRestore', getVal('StamRestore') * 10); refresh()
+      end },
+    { cap = '快感锁定50%', fn = function()
+        AROUSE_VAL = getVal('MaxArouse') * 0.5
+        AROUSE_LOCK = true
+        writeFloat(ADDR.Arouse, AROUSE_VAL)
+        refresh()
+      end },
+    { cap = '快感解锁', fn = function() AROUSE_LOCK = false; refresh() end },
+    { cap = '全部锁定', fn = function()
+        local function on(k)
+          if not LOCKS[k] then
+            LOCKVAL[k] = getVal(k); LOCKS[k] = true
+            if ROWS[k] and ROWS[k].lock then ROWS[k].lock.Caption = '■' end
+          end
+        end
+        on('HP'); on('Stamina'); on('Invincible')
+        refresh()
+      end },
+    { cap = '全部解锁', fn = function()
+        local i
+        for i = 1, #WANT do
+          LOCKS[WANT[i].key] = false; LOCKVAL[WANT[i].key] = nil
+          if ROWS[WANT[i].key] and ROWS[WANT[i].key].lock then ROWS[WANT[i].key].lock.Caption = '□' end
+        end
+        AROUSE_LOCK = false
+        refresh()
+      end },
+    { cap = '刷新', fn = refresh },
+    { cap = '关闭', fn = quitTrainer },
+  }
+  local qw, qsum = {}, 0
+  local i
+  for i = 1, #quick do
+    qw[i] = math.floor(estW(quick[i].cap, TH) * 1.35) + PAD * 2
+    qsum = qsum + qw[i]
+  end
+  qsum = qsum + GAP * (#quick - 1) + PAD * 2
+
+  local FW = math.max(FW_ROW, qsum)
+  -- 高度：表头 + 10 个数值行 + HP比例/信息两行 + 家族区(标题+3行) + 快捷按钮一排
+  local FH = PAD + HEAD_H + #WANT * ROW_H + (TH + PAD) * 2
+             + (TH + PAD) + #FAMILIES * ROW_H + GAP + BTN_H + PAD + 8
+
+  -- ------------------------------------------------------------------
+  -- 宽度上限 —— 三次踩坑后的最终策略
+  --
+  -- 踩过的坑：
+  --   ① getScreenWidth()：返回【物理】像素，与窗体逻辑像素差缩放比
+  --      （DSH 会话实测 3840，用户会话也 3840，但 Session0 的 CE 返回 1024！）
+  --   ② MainForm.Width：CE 主窗口的【当前尺寸】，不是屏幕宽度
+  --      （两个会话都是 799，完全不可用）
+  --
+  -- 最终策略：**面板宽度由内容决定，上限取一个固定保守值**，
+  --   并且**永不把名字列压到装不下最长标签**。
+  --
+  -- 上限取 1800 的依据（实测数据）：
+  --   用户桌面会话：getScreenWidth()=3840(物理)，200% 缩放 -> 逻辑 1920
+  --                 此时 textH=32，面板内容约需 1900 逻辑像素
+  --   DSH/Session0： getScreenWidth()=1024 -> 但这里只是开发环境，不用于交付
+  --   故 1800 在用户会话下刚好不压缩、又不至于超出屏宽（1920）。
+  -- ------------------------------------------------------------------
+  local MAXW = 1800        -- 逻辑像素上限（按用户会话 1920 逻辑宽留余量）
+  if FW > MAXW then
+    local k = MAXW / FW
+    local minName = math.floor(estW(nameProbe, TH) * 1.25) + PAD * 2
+    local function sq(v, mn) return math.max(mn or 24, math.floor(v * k)) end
+    -- 名字列保底：绝不窄于最长标签所需
+    W_NAME = math.max(minName, sq(W_NAME, 60))
+    W_NUM = sq(W_NUM, 50); W_EDIT = sq(W_EDIT, 60)
+    W_BTN = sq(W_BTN, 46); W_MINI = sq(W_MINI, 30); W_LOCK = sq(W_LOCK, 40)
+    GAP = sq(GAP, 6)
+    X_NAME = PAD
+    X_CUR  = X_NAME + W_NAME + GAP
+    X_EDIT = X_CUR + W_NUM + GAP
+    X_M1   = X_EDIT + W_EDIT + GAP
+    X_P1   = X_M1 + W_MINI + 4
+    X_BTN  = X_P1 + W_MINI + GAP
+    X_LOCK = X_BTN + W_BTN + GAP
+    FW = X_LOCK + W_LOCK + PAD
+    say(string.format('width capped by k=%.2f -> %d (MAXW %d, nameProbe=%s)', k, FW, MAXW, nameProbe))
+  else
+    say(string.format('width not capped: FW=%d (MAXW %d)', FW, MAXW))
+  end
+
+  say(string.format('metrics: textH=%d -> form %dx%d', TH, FW, FH))
+
+  f.Width = FW
+  f.Height = FH
+
+  local y = PAD
+  mkLabel(f, X_NAME, y, W_NAME, LBL_H, '属性')
+  mkLabel(f, X_CUR,  y, W_NUM,  LBL_H, '当前')
+  mkLabel(f, X_EDIT, y, W_EDIT, LBL_H, '目标值')
+  mkLabel(f, X_LOCK, y, W_LOCK, LBL_H, '锁定')
+  y = y + HEAD_H
+
+  for i = 1, #WANT do
+    local k = WANT[i].key
+    -- 面板显示中文 label；CE 地址列表内部用 ASCII key（中文会让查找失效）
+    mkLabel(f, X_NAME, y + math.floor(PAD / 2) + 2, W_NAME, LBL_H, WANT[i].label)
+    local cur = mkLabel(f, X_CUR, y + math.floor(PAD / 2) + 2, W_NUM, LBL_H, '?')
+    local ed = mkEdit(f, X_EDIT, y, W_EDIT, LBL_H + 6)
+    mkButton(f, X_M1, y, W_MINI, BTN_H, '-', function() bump(k, -1) end)
+    mkButton(f, X_P1, y, W_MINI, BTN_H, '+', function() bump(k, 1) end)
+    mkButton(f, X_BTN, y, W_BTN, BTN_H, '写入', function() writeField(k) end)
+    local lk = mkButton(f, X_LOCK, y, W_LOCK, BTN_H, '□', function() toggleLock(k) end)
+    ROWS[k] = { cur = cur, edit = ed, lock = lk }
+    y = y + ROW_H
+  end
+
+  ROWS._ratio = mkLabel(f, PAD, y, FW - PAD * 2, LBL_H, 'HP --')
+  y = y + TH + PAD
+  ROWS._info = mkLabel(f, PAD, y, FW - PAD * 2, LBL_H, '--')
+  y = y + TH + PAD
+
+  -- ------------------------------------------------------------------
+  -- 异常状态家族区（服从 / 淫乱 / 受虐倾向，各 1~3 级）
+  --
+  -- 每行：家族名 | 当前等级 | 设为1 设为2 设为3 | 清除
+  -- 所有操作走 TrySetLevel / TryDowngrade（正规托管 API），
+  -- 且每次调用前由 familyOp 内部检查管道健康。
+  -- ------------------------------------------------------------------
+  ROWS._statusHead = mkLabel(f, PAD, y, FW - PAD * 2, LBL_H, '异常状态（点击设置等级）')
+  y = y + TH + PAD
+
+  local W_SET = math.floor(estW('设为3', TH) * 1.5) + PAD * 2
+  local W_CLR = math.floor(estW('清除', TH) * 1.5) + PAD * 2
+  local X_LV  = PAD + W_NAME + GAP
+  local X_S1  = X_LV + W_NUM + GAP
+
+  for i = 1, #FAMILIES do
+    local fam = FAMILIES[i]
+    local yRow = y
+    mkLabel(f, PAD, yRow + math.floor(PAD / 2) + 2, W_NAME, LBL_H, fam.cn)
+    local lvLbl = mkLabel(f, X_LV, yRow + math.floor(PAD / 2) + 2, W_NUM, LBL_H, '-')
+    fam.row = lvLbl
+    for lv = 1, 3 do
+      local xb = X_S1 + (lv - 1) * (W_SET + 6)
+      mkButton(f, xb, yRow, W_SET, BTN_H, '设为' .. lv, function()
+        local ok, msg = familyOp(fam.id, 'set', lv)
+        say(string.format('[status] %s = %d : ok=%s %s', fam.cn, lv, tostring(ok), tostring(msg)))
+        refresh()
+      end)
+    end
+    local xc = X_S1 + 3 * (W_SET + 6) + GAP
+    mkButton(f, xc, yRow, W_CLR, BTN_H, '清除', function()
+      local n = familyClear(fam.id, 3)
+      say(string.format('[status] %s 清除 %d 级', fam.cn, n))
+      refresh()
+    end)
+    y = y + ROW_H
+  end
+  y = y + math.floor(PAD / 2)
+
+  local qx, qy = PAD, y
+  for i = 1, #quick do
+    if qx + qw[i] > FW - PAD then
+      qx = PAD
+      qy = qy + BTN_H + 8
+    end
+    mkButton(f, qx, qy, qw[i], BTN_H, quick[i].cap, quick[i].fn)
+    qx = qx + qw[i] + GAP
+  end
+  local extra = (qy - y)
+  if extra > 0 then
+    f.Height = f.Height + extra
+    say(string.format('quick row wrapped, extra height = %d', extra))
+  end
+
+  f.OnClose = function(sender) quitTrainer() end
+  pcall(function() f.centerScreen() end)
+  say(string.format('panel built: %dx%d', f.Width, f.Height))
+
+  panel = f
+  f.show()
+  pcall(function() f.bringToFront() end)
+
+  local lt = createTimer(MainForm, false)
+  lt.Interval = 500   -- ⚠️ 不能太快：tickLocks 里对性快感会调 setArouse（托管方法），
+                      --    实测高频连续调用托管方法有崩溃风险（见 familyOp 上方说明）。
+                      --    500ms（每秒 2 次）足以压制 decreasePerSecond 的自然递减。
+  lt.OnTimer = function(sender) pcall(tickLocks) end
+  lt.Enabled = true
+  _G.nn_lock_timer = lt
+
+  local rt = createTimer(MainForm, false)
+  rt.Interval = 500
+  rt.OnTimer = function(sender) pcall(refresh) end
+  rt.Enabled = true
+  _G.nn_refresh_timer = rt
+
+  refresh()
+  say('panel created')
+end
+
+-- ---------------------------------------------------------------- 主循环
+local function tick(sender)
+  tries = tries + 1
+  local ok, err = pcall(function()
+    if not diagDone then diag() end
+    if (getOpenedProcessID() or 0) == 0 then
+      local pid = getProcessIDFromProcessName(PROCESS_NAME)
+      if pid and pid ~= 0 then openProcess(pid) end
+    end
+    if ensureMono() then
+      local n, why = apply()
+      if n > 0 then
+        sender.Enabled = false
+        buildPanel()
+      elseif tries % 20 == 0 then
+        say('waiting: ' .. tostring(why))
+      end
+    end
+  end)
+  if not ok then say('error: ' .. tostring(err)) end
+  if tries > 239 then
+    sender.Enabled = false
+    say('gave up after ' .. tries .. ' tries')
+  end
+end
+
+local boot = createTimer(MainForm, false)
+boot.Interval = 500
+boot.OnTimer = tick
+boot.Enabled = true
+say('waiting for the mono collector...')
+  </LuaScript>
+</CheatTable>

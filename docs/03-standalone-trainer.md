@@ -204,11 +204,42 @@ python '<CE_DIR>\make_trainer.py' `
 |---|---|
 | 建窗/建控件 | `createForm(visible)` / `createLabel(owner)` / `createEdit(owner)` / `createButton(owner)` / `createPanel(owner)` |
 | 窗体 | `.Caption` `.Width` `.Height` `.OnClose` `.show()` `.hide()` `.centerScreen()` `.bringToFront()` |
+| **任务栏显示** | **`.ShowInTaskbar = 1`**（`stAlways`）← 见 §4.1.1 |
 | 控件 | `.Left` `.Top` `.Width` `.Height` `.Caption`（Edit 用 `.Text`）`.OnClick` `.Font.Size` |
+| **枚举窗体控件** | **`form.getControl(i)`** + `form.ControlCount` ← ⚠️ `form.Controls` 是 **nil** |
 | 隐藏 CE 界面 | `hideAllCEWindows()` ← 变成"修改器样貌"的关键 |
 | 退出 | `closeCE()` |
 | 定时刷新 | `createTimer(MainForm, false)` + `.Interval` / `.OnTimer` / `.Enabled` |
 | 不写进表 | `form.DoNotSaveInTable = true` |
+
+#### 4.1.1 让面板显示在任务栏（✅ 2026-09-20 实测）
+
+**问题**：CE 的 `createForm` 默认 `ShowInTaskbar = stDefault`，**面板不进任务栏**，
+玩家切游戏/修改器只能靠 `Alt+Tab`，还容易误触游戏快捷键。
+
+**正解**：
+
+```lua
+pcall(function() f.ShowInTaskbar = 1 end)   -- 1 = stAlways
+```
+
+**⚠️ 必须用数字，不能用枚举常量名**：LCL 的 `stDefault` / `stAlways` / `stNever`
+在 CE 的 Lua 全局里**不存在**（是 `nil`）。写 `f.ShowInTaskbar = stAlways` 会**静默失败**
+（不报错，回读仍是 `stDefault`）。实测映射：**`0=stDefault`、`1=stAlways`、`2=stNever`**。
+
+**枚举 & 触发控件的写法**（调试/自动化时有用）：
+
+```lua
+-- form.Controls 是 nil，要用 getControl(i)
+for i = 0, f.ControlCount - 1 do
+  local c = f.getControl(i)
+  local cap = nil
+  pcall(function() cap = c.Caption end)
+  if cap == '某个按钮' then
+    c.OnClick(c)          -- 手动触发点击（参数传控件自身）
+  end
+end
+```
 
 ### 4.2 三个"看着能用、实际不能用"的 API（✅ 全部实测）
 
@@ -444,6 +475,28 @@ CE 读不到用户会话的字体设置，按 100% 度量算；用户原生启�
 > 修正方向：布局的可用宽度应当用「**物理宽 ÷ 缩放比 = 逻辑宽**」（本机 1024 ÷ 2 = **512 逻辑像素**），
 > 而不能直接拿 `getScreenWidth()`（它给的是物理量）当上限。
 
+#### 补充实测：两个"屏幕宽度"API 都不可信（✅ 2026-09-20）
+
+| 环境 | `getScreenWidth()` | `MainForm.Width` | `Font.Height`(12pt) | 面板落定尺寸 |
+|---|---|---|---|---|
+| DSH / Session 0 起的 CE | **1024** | 799 | **16** | 1562×928（未压缩） |
+| 用户桌面会话（打包后的 trainer） | **3840** | 799 | **32** | — |
+
+**两个 API 的问题**：
+
+- `getScreenWidth()`：返回**物理**像素，且**跨会话还不一致**（本机 1024 vs 3840）
+- `MainForm.Width`：是 **CE 主窗口**的尺寸（不是屏幕宽），两个会话**都是 799**，完全不可用
+
+**最终采用的策略**（简单且稳）：
+
+1. 面板宽度**由内容决定**
+2. 上限取**固定值**（本项目取 **1800**，按用户会话 1920 逻辑宽留余量）
+3. 压缩时给**名字列设保底宽度**：绝不窄于最长标签所需（防止标签被截断）
+4. 字号取小一点（本项目 **12**）
+
+> **教训**：与其猜屏幕宽度猜错导致标签截断，不如给一个宽松的固定上限 ——
+> 面板是独立窗口，正常屏幕都远宽于它。
+
 ---
 
 ## 5. 坑位速查（全部实测）
@@ -464,6 +517,13 @@ CE 读不到用户会话的字体设置，按 100% 度量算；用户原生启�
 | **⑫ 关掉修改器后进程残留** | 三个同名进程还活着，占着 Mono 采集器通道 | **用看门狗启动器启动**（§4.7）；CE 内部发不起脱离式清理进程 |
 | **⑬ `.ps1` 中文进程名匹配不上** | 脚本静默无输出、退出码 0 | `.ps1` 必须带 **UTF-8 BOM**（PS 5.1 无 BOM 按 ANSI 解析）；`.bat` 反之用 GBK |
 | **⑭ `Get-Process.Path` 返回空** | 按路径筛进程筛不到 | 用 `Get-CimInstance Win32_Process` 的 `ExecutablePath` |
+| **⑮ 面板不在任务栏** | 切游戏/修改器只能 `Alt+Tab`，易误触游戏快捷键 | `f.ShowInTaskbar = 1`（**必须用数字**，枚举常量名在 CE 里是 nil 会静默失败），见 §4.1.1 |
+| **⑯ `form.Controls` 是 nil** | 想遍历控件改不了 | 用 `form.getControl(i)` + `form.ControlCount` |
+| **⑰ 尺寸算法用了 `getScreenWidth()` / `MainForm.Width`** | 面板被压缩到**标签截断**（两会话下值都不同） | 别拿它们当屏幕宽度，见 §4.7.7 的实测数据；宽度由内容决定 + 固定上限 + 名字列保底 |
+| **⑱ LuaScript 里有裸 `&`** | 严格 XML 解析器报 `invalid token`（CE 自身容错，但规范上不合法） | 位运算改取模/取整：`v % 256`、`v = math.floor(v/256)`。**注释里的裸字符同样会坏事** |
+| **⑲ Lua `local` 作用域** | 日志显示解析成功，运行逻辑却报"未解析" | 共享变量**统一声明在脚本最前面**。`local` 是词法作用域，函数定义时不可见的 local 会退化成**读全局**（一边写 local、一边读 global）。建议加自动自查（§7.1） |
+| **⑳ 高频调托管方法导致游戏崩溃** | 偶发崩溃（`mono_invoke_method` 走每线程管道，失效时继续调用会写坏管道） | 调用前 `pipeOK()` 自检；一次只做一个操作；周期调用间隔 ≥200ms 并限流。详见 `01-mono-recon.md` §8.4 |
+| **㉑ CE 里面板尺寸正常、用户那边截断** | 两个会话的 `Font.Height` 差约一倍 | **面板尺寸只能在用户会话目视确认**（§4.7.7） |
 
 ---
 
@@ -517,6 +577,32 @@ CE 读不到用户会话的字体设置，按 100% 度量算；用户原生启�
 # 1) 表的 LuaScript 没有裸 < / &（XML 必须能解析）
 python -c "import re,xml.etree.ElementTree as ET; p=r'<.CT路径>'; raw=open(p,encoding='utf-8').read(); txt=re.search(r'<LuaScript>(.*?)</LuaScript>',raw,re.S).group(1); print([l for l in txt.split(chr(10)) if '<' in l or '&' in l]); ET.parse(p); print('XML OK')"
 ```
+
+**2) Lua 作用域自查**（专查「使用早于 local 声明」）—— 强烈建议做：
+
+```powershell
+python check_lua_scope.py <提取出的脚本.lua>
+```
+
+**为什么必须查**：这是**最隐蔽的一类 bug**。实测踩过一次，症状是
+**日志里明明显示解析成功，运行逻辑却报"未解析"**：
+
+```lua
+local function familyService()
+  local p = PLAYER_ADDR      -- 行 174：使用
+end
+...
+local PLAYER_ADDR = nil      -- 行 317：声明（在使用之后！）
+```
+
+Lua 的 `local` 是**词法作用域** —— `familyService` 定义时 `PLAYER_ADDR` 这个 local 还不存在，
+于是函数体里读到的是**全局** `_G.PLAYER_ADDR`（永远 nil）；而后面写的是那个 local。
+**一边写 local、一边读 global，永远读不到**，且完全不报错。
+
+> 已通用化的检查脚本见仓库 `src/check_lua_scope.py`（思路：收集所有 `local` 首次声明行号，
+> 再扫每个变量的裸读取，报告「使用行号早于声明行号」的项；需排除函数参数与 for 循环变量）。
+
+**3) 结构自检**：条目数对得上、脚本能 `loadstring` 通过（CE 里试跑一次，看文件日志）。
 
 ### 7.2 运行侧验证（**必须干净环境**）
 

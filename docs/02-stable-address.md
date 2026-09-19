@@ -387,6 +387,69 @@ dsh_stable.enableAuto()          -- 包装 MainForm.OnProcessOpened，开进程�
 > ⚠️ 注入 `MonoDataCollector64.dll`（CE 目录内 738 KB）会让 CE 出现 Mono 菜单项；单机游戏通常无碍，
 > 但对有反作弊/反调试的游戏要谨慎。
 
+### 7.6 调用托管方法改状态（`mono_invoke_method`）— ✅ 2026-09-20 实测
+
+> **用途**：有些数值/状态**光写字段改不动**（界面不刷新、或被游戏覆盖回来）。
+> 这时要走游戏自己的方法。CE **能**调托管方法 —— 我一度以为不能，是因为探测了
+> `mono_runtime_invoke`（Mono 原生导出名，CE 没暴露），**CE 的封装叫 `mono_invoke_method`**。
+
+**签名**（源码 `autorun\monoscript.lua` 确认）：
+
+```lua
+mono_invoke_method(domain, method, object, args)   -- 完整版
+mono_invoke(methodname, instance, arguments)        -- 简化版
+```
+
+- `method` 可传方法指针或方法名字符串
+- `args` 元素可传裸值（CE 按参数类型自动推导）
+- 返回 `result, vtype, exception`（异常是读出来的，不抛）
+
+**完整调用示例**：
+
+```lua
+local dom = mono_enumDomains()[1]
+
+-- ① 取方法指针（enumMethods 元素含 {method=, name=, flags=}）
+local c = mono_findClass('', 'SexualHeatManager')
+local m = nil
+for _, e in ipairs(mono_class_enumMethods(c)) do
+  if e.name == 'Set' then m = e.method break end
+end
+
+-- ② 需要字符串参数时先造托管字符串
+local s = mono_new_string(dom, 'some_id')
+
+-- ③ 调用（第 4 个参数是 args 数组）
+local ok, r = pcall(mono_invoke_method, dom, m, instanceAddr, { value })
+```
+
+**⚠️ 两个硬规矩（都是拿游戏崩溃换的）**：
+
+1. **调用前必须检查管道健康**。`mono_invoke_method` 走**每线程命名管道**；
+   管道失效时继续调用 → 垃圾写进管道 → **目标进程崩溃**。
+   源码里管道按 `libmono.monopipes[getCurrentThreadID()]` 缓存，
+   且 `getMonoPipe` 开头会检查 `libmono.MDC_ShuttingDownAddress`。
+   ```lua
+   local function pipeOK()
+     if type(libmono) ~= 'table' or libmono.abort then return false end
+     if readInteger(libmono.MDC_ShuttingDownAddress) ~= 0 then return false end
+     local p = libmono.monopipes[getCurrentThreadID()]
+     if p == nil or p.Connected == false or libmono.monopipe == nil then return false end
+     return true
+   end
+   ```
+   配套：**一次只做一个操作**；循环时每步复查；周期调用间隔不要低于 200ms 并做限流。
+
+2. **绝不手工改托管容器的内部结构**（`Dictionary` / `List` 的 entries / buckets / count）。
+   实测：手工往 `_active` 字典插条目并修好哈希链，数据层验证全对，但**游戏崩溃**。
+   **能调方法就调方法**，方法内部会一并处理事件通知与 UI 刷新。
+
+**调用后 `mono_AttachedProcess` 变 nil 是正常现象**（独立 CE），
+重新 `LaunchMonoDataCollector()` 即可，不是崩溃。
+
+> `enumMethods` / `enumFields` **只列本类声明的成员，不含继承的**。
+> 子类上找不到 `Set` 就去**父类**（`mono_class_getParent`）找，再对子类实例调用。
+
 ---
 
 ## 8. 方法 D：CE GUI 指针扫描（人工兜底，最通用的"笨办法"）
@@ -470,7 +533,68 @@ mr.Description = 'SAN'                             -- ⚠️ 用 ASCII：中文�
 - ❌ 对字段地址调 `mono_object_getClass`（返回 nil）
 - ❌ 二级指针链（托管对象在 GC 堆，逐级 BFS 到不了根）
 
-**待补**：实例字段路径（`mono_class_findInstancesOfClass` 枚举实例 → 字段 offset）。
+**待补** ⇒ **已补**：实例字段路径见下方 §10.1.1（`Nurtale Nesche` 实战，2026-09-20）。
+
+#### 10.1.1 实例字段路径：无静态单例时怎么走（✅ 2026-09-20 实测跑通）
+
+**案例**：`Nurtale Nesche`（Unity Mono）。全程序集扫描确认
+**`Player` / `Health` 都没有任何静态字段持有**（扫 `NurtaleNesche.Runtime` 全部类，0 命中）。
+所以 10.1 那条「`GameManager.Instance` 静态根」**不存在**。
+
+**走通的链**（静态入口 + 固定偏移，跨重启验证通过）：
+
+```
+GUIHUDManager.instance                     ★ 静态字段 @ offset 0
+  +0x28  healthGUI → HealthCanvasManager
+           +0x20  health → Health           ← 数据对象到手
+  +0x50  arouseGaugeManager → ArouseGaugeManager
+```
+
+**排查顺序**（推荐）：
+
+| 顺序 | 手段 | 说明 |
+|---|---|---|
+| ① | 找静态单例持有数据 | 最省事，如 10.1 的 `GameManager.Instance` |
+| ② | **全程序集扫静态字段**，确认确实没有 | 扫 `mono_class_getStaticFieldAddress` + `enumFields`，比对值是否等于目标对象 |
+| ③ | **UI 管理器单例 → 子管理器 → 数据对象** | ★ 本案例走通的这条。HUD 要显示数值，必然持有数据引用 |
+| ④ | 反查指针拿上层对象 | 搜「谁存着这个地址」→ `Health` ← `PlayerHealthManager`(+0x20) ← `Player`(+0xD8) |
+| ⑤ | AOB 特征 | 最后手段 |
+
+**为什么不优先用 AOB**：实测 AOB 特征依赖**游戏数据里的具体数值**
+（如 `maxHealth=35, healthCap=80, maxStamina=45`），**玩家一升级（35→39）就失配**。
+而 ③ 依赖的是**类名 + 字段偏移**，与数值无关。
+
+**反查指针的写法**（注意用取模而非位运算，见 `CE独立修改器方法.md` 的 XML 坑）：
+
+```lua
+local function findPtrTo(addr)
+  local b = {}
+  local v = addr
+  for i = 0, 7 do
+    b[#b+1] = string.format('%02X', v % 256)
+    v = math.floor(v / 256)
+  end
+  return AOBScan(table.concat(b, ' '))
+end
+-- 对每个命中位置用候选偏移试类名，严格校验（mono_object_getClass 对垃圾地址也返回字符串）
+```
+
+**重启验证数据**（第 ⑥ 步，排除巧合的唯一手段）：
+
+| 项 | 重启前 | 重启后 |
+|---|---|---|
+| `Health` 对象 | `291744AE630` | `21CD02F95A0` ← 变了 |
+| `Gauge` 对象 | `2915E061480` | `21CCDB9B720` ← 变了 |
+| `MaxHP` 读值 | 35 | **35** ← 正确 |
+| HP 比例 | — | **42.9% (15/35)** ← 与游戏原生状态一致 |
+
+**结论**：地址整体搬迁（static_data 与托管堆重新分配），但**`类名 + 字段偏移`一字节不差**。
+
+**本案例还发现的两类问题**（详见 `01-mono-recon.md` §5 与 §8）：
+
+- **写字段 UI 不动** → 性快感的真源是**父类** `SexualHeatManager._heat`
+  （`enumFields` 只列本类声明，继承字段看不到）；必须调 `Set()` 才同步。
+- **调托管方法有崩溃风险** → 调用前必须 `pipeOK()` 自检，且绝不手工改托管容器内部结构。
 
 ### 10.2 Unity（IL2CPP）— ⏳ 待实测
 ### 10.3 Godot — ⏳ 待实测

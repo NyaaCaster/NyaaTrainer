@@ -230,6 +230,54 @@ print(string.format('HP = %d / %d', readInteger(data + 0x18), readInteger(data +
 所以**必须用 `f.name:find('Data', 1, true)` 模糊匹配**，写 `f.name == 'Data'` 会永远匹配不上。
 （我第一次就是精确匹配失败，报 `GameData is null`。）
 
+#### 情况 C：**没有任何静态单例**时，走 UI 管理器兜底（✅ 2026-09-20 实测）
+
+`Nurtale Nesche` 是这种：全程序集扫描确认 **`Player` / `Health` 都没有任何静态字段持有**
+（扫 `NurtaleNesche.Runtime` 全部类，0 命中）。这时**不要**急着去做指针扫描或 AOB 猜值。
+
+**更快的路：找 UI 管理器**。HUD 要显示数值，就必然持有数据对象的引用，
+而管理器本身往往是**静态单例**：
+
+```lua
+-- GUIHUDManager.instance（静态字段 @ offset 0）
+--   +0x28  healthGUI → HealthCanvasManager
+--            +0x20  health → Health        ← 数据对象到手
+--   +0x50  arouseGaugeManager → ArouseGaugeManager
+```
+
+**为什么这条比指针扫描好**：
+
+| 手段 | 稳定性来源 | 问题 |
+|---|---|---|
+| AOB 特征扫描 | 游戏数据里的**具体数值** | ⚠️ 玩家一升级（`maxHealth` 35→39）就失配 |
+| UI 管理器单例 | **类名 + 字段偏移** | ✅ 与数值无关，跨重启有效 |
+
+**排查顺序建议**：① 静态单例持有数据 → ② 全程序集扫静态字段（确认确实没有）→
+③ **UI 管理器单例 → 子管理器 → 数据对象** → ④ 指针反查 → ⑤ 才考虑 AOB。
+
+**补充技巧：反查指针拿"上层对象"**
+
+数据对象拿到后，若还需要它的**持有者**（例如 `Player`），可以**搜指向它的指针**：
+
+```lua
+-- 搜哪些位置存着这个地址（8 字节小端模式）
+local function findPtrTo(addr)
+  local b = {}
+  local v = addr
+  for i = 0, 7 do
+    b[#b+1] = string.format('%02X', v % 256)   -- 用取模而非位运算，见下方坑位
+    v = math.floor(v / 256)
+  end
+  return AOBScan(table.concat(b, ' '))
+end
+-- 对每个命中位置，用候选偏移试 mono_object_getClass，类名对得上就是它
+--   实测：Health ← PlayerHealthManager(+0x20) ← Player(+0xD8)
+```
+
+> ⚠️ `mono_object_getClass` 对**任意地址**都会返回字符串（不是 nil），
+> 所以**必须严格校验类名**（过滤不可打印字符），否则全是假阳性。
+> 实测教训：靠"向上扫偏移找对象基址"得到一堆垃圾类名，白费很多轮。
+
 ---
 
 ## 3. 验证：怎么确认"找对了"
@@ -291,7 +339,19 @@ end
 | `mono_method_getSignature` 返回空 | 拿不到方法签名/IL | 方法可能**还没被 JIT 编译**，`address=0`。可先 `mono_compile_method(m)` |
 | 直接扫内存找数值 | 命中几十万个，收敛不了 | 先 dump 结构；确实要扫时用**两次筛选法**（见 `CE稳定地址方法.md` §3） |
 | 用"值像什么"去猜 | 把 `214/255 = 0.839216` 的颜色分量当成 HP 比例 | **不要模式猜测**。实测中这种"特征"命中的全是无关数据 |
-| 改 UI 类的字段 | 数值改了没反应 | UI 是副本，要改**数据容器**里的源字段 |
+| 改 UI 类的字段 | 数值改了没反应 | UI 是副本，要改**数据容器**里的源字段；详见下方"只写字段界面不动" |
+| **只写字段界面不动** | 回读值确实变了，但**界面不刷新**，且游戏下次更新就覆盖回来 | 字段是**显示副本**，UI 靠**事件通知**刷新 → 必须**调方法**（如 `Set()`），见 §8.6 |
+| **以为 CE 调不了托管方法** | 探测 `mono_runtime_invoke` 得到 `nil` | 那是 Mono 原生名；CE 的封装叫 **`mono_invoke_method`**，在 `autorun\monoscript.lua` 里，见 §8 |
+| **`mono_class_enumMethods` 看不到父类方法** | 在子类上找不到 `Set` / `ForceActivate` 等 | `enumMethods` **只列本类声明的方法**；去**父类**（`mono_class_getParent`）找，再对子类实例调用 |
+| **`enumFields` 看不到父类字段** | 明明有数据的 `+0x40` 不在字段表里 | 同上：只列本类声明。继承来的字段要查父类的 `enumFields` |
+| **手工改托管容器内部结构** | 数据层验证全对，但**游戏崩溃** | **绝不能写**托管 `Dictionary` / `List` 的内部结构（entries/buckets/count）。要改就调游戏自己的方法，见 §8.5 |
+| **管道失效时继续调托管方法** | 偶发**游戏崩溃** | 调用前必须 `pipeOK()` 自检（见 §8.4）；一次只做一个操作，循环时每步复查 |
+| **Lua `local` 作用域** | 日志显示解析成功，实际逻辑却报"未解析" | `local` 是**词法作用域**：函数定义时不可见的 local，在函数体里会退化成**读全局**。共享变量统一声明在**文件最前面** |
+| **`mono_object_getClass` 假阳性** | 对任意地址都返回字符串（不是 nil），"向上扫偏移找对象基址"得到一堆垃圾类名 | 必须**严格校验类名**（过滤不可打印字符 `[\0-\31]`），否则全是假阳性 |
+| **`mono_class_findInstancesOfClass` 返回 nil** | 静默失败，以为是 API 不可用 | CE 内部依赖 `mono_method_get_parameters` 拿到参数；采集器状态不健康时它返回 0 个参数 → 静默退出。**重新注入采集器**后再试 |
+| **AOB 特征依赖具体数值** | 用 `maxHealth/healthCap/...` 的绝对值做特征，玩家一升级（35→39）就失配 | 优先用**类名 + 字段偏移**；必须用 AOB 时挑与玩家进度无关的稳定字节 |
+| **`getScreenWidth()` / `MainForm.Width` 当屏幕宽度** | 面板被压到标签截断（实测一个返回物理像素、一个是 CE 主窗口尺寸，跨会话还不同） | 面板宽度**由内容决定 + 固定上限**，并给名字列设**保底宽度**；详见 `CE独立修改器方法.md` |
+| **Lua 脚本里写裸 `<` 或 `&`** | `.CT` 加载成功但 LuaScript **静默不执行**；或 XML 解析器报 `invalid token` | 条件写成 `>` 形式；位运算改取模/取整（`v % 256; v = floor(v/256)`）。**注释里的裸字符同样会坏事** |
 
 ---
 
@@ -346,6 +406,9 @@ GameManager.UnlockSkill
 | 字段 | `mono_class_enumFields(c)` → `{name, offset, isStatic, isConst, monotype}` |
 | 静态数据区 | `mono_class_getStaticFieldAddress(domain, class)` |
 | 方法 | `mono_class_enumMethods(c)` / `mono_method_getSignature(m)` / `mono_compile_method(m)` |
+| **调用方法** | **`mono_invoke_method(domain, method, object, args)`** ← 见 §8 |
+| 构造字符串参数 | `mono_new_string(domain, utf8str)` |
+| 取方法签名 | `mono_method_get_parameters(method)` → `{parameters = {{name=, type=, monotype=}}}` |
 | 对象 | `mono_object_getClass(addr)`（**只接受对象起始地址**，字段地址返回 nil） |
 | 有效性 | `mono_isValid()` / `mono_AttachedProcess` |
 | 实例枚举 | `mono_class_findInstancesOfClass(domain, klass, ...)`（较慢，慎用） |
@@ -354,11 +417,141 @@ GameManager.UnlockSkill
 
 ---
 
-## 8. 与其它文档的关系
+## 8. 调用托管方法（`mono_invoke_method`）— ✅ 2026-09-20 实测跑通
+
+> **这一节纠正一个容易犯的错**：CE **能**调用托管方法。
+> 我一度探测全局函数名 `mono_runtime_invoke` 得到 `nil`，就下结论"CE 调不了托管方法" ——
+> **那是 Mono 的原生导出名，CE 没暴露它**。CE 自己的封装在
+> `<CE_DIR>\autorun\monoscript.lua` 里，名字是 **`mono_invoke_method`**。
+> **教训：探测 API 时不要只试原生名，要去读 monoscript.lua。**
+
+### 8.1 签名（源码 `monoscript.lua` 确认）
+
+```lua
+mono_invoke_method(domain, method, object, args)   -- 完整版
+mono_invoke(methodname, instance, arguments)        -- 简化版（domain 传 nil）
+```
+
+- `method` 既可以是**方法指针**，也可以是**方法名字符串**（内部走 `mono_findMethod`）
+- `object` 是实例指针；静态方法传 `nil`
+- `args` 是数组表，元素可传**裸值**（CE 按参数类型自动推导），也可传 `{type=, value=}`
+- 返回值：`result, vtype, exception`（异常是**读出来的**，不抛）
+
+### 8.2 拿方法指针 + 确认签名
+
+```lua
+-- 取方法指针（enumMethods 返回 {method=, name=, flags=}）
+local function findMethod(clsName, mName)
+  local c = mono_findClass('', clsName)
+  for i = 1, #mono_class_enumMethods(c) do
+    local m = mono_class_enumMethods(c)[i]
+    if m.name == mName then return m.method end
+  end
+  return nil, 'not found: ' .. mName
+end
+
+-- 确认参数（构造 args 前建议先看一遍）
+local ok, params = pcall(mono_method_get_parameters, m)
+-- params.parameters[i].name / .type / .monotype
+```
+
+### 8.3 调用示例
+
+```lua
+local dom = mono_enumDomains()[1]
+local m   = findMethod('SomeManager', 'SetValue')
+
+-- 需要字符串参数时，先造托管字符串
+local s = mono_new_string(dom, 'some_id')
+
+-- 单参数
+local ok, r = pcall(mono_invoke_method, dom, m, instanceAddr, { s })
+-- 多参数（字符串 + 整数）
+local ok2, r2 = pcall(mono_invoke_method, dom, m, instanceAddr, { s, 3 })
+```
+
+### 8.4 ⚠️ 硬规矩：调用前必须检查管道健康
+
+**这是拿两次游戏崩溃换来的。**
+
+`mono_invoke_method` 走 **每线程命名管道** 通信。管道失效时若继续调用，
+会把垃圾写进管道 → 采集器解析出错 → **目标进程崩溃**。
+
+源码（`monoscript.lua` 的 `getMonoPipe`）：
+
+```lua
+local tid = getCurrentThreadID()
+local result = libmono.monopipes[tid]        -- ★ 管道按【线程 ID】缓存
+if result and (result.Connected == false) then
+  result.destroy(); libmono.monopipes[tid] = nil; result = nil
+end
+-- 开头还有：
+if readInteger(libmono.MDC_ShuttingDownAddress) ~= 0 then return nil end
+```
+
+所以调用前必须自检：
+
+```lua
+local function pipeOK()
+  if type(libmono) ~= 'table' then return false, 'libmono missing' end
+  if libmono.abort then return false, 'libmono.abort' end
+  if readInteger(libmono.MDC_ShuttingDownAddress) ~= 0 then return false, 'shutting down' end
+  local p = libmono.monopipes[getCurrentThreadID()]
+  if p == nil then return false, 'no pipe for thread' end
+  if p.Connected == false then return false, 'pipe disconnected' end
+  if libmono.monopipe == nil then return false, 'monopipe nil' end
+  return true
+end
+
+-- 用法：不健康就拒绝调用，宁可失败也不带病操作
+local pk, why = pipeOK()
+if not pk then return false, 'pipe not healthy: ' .. tostring(why) end
+```
+
+**配套的保守设计**：
+
+1. **一次只做一个操作** —— 不在一个脚本里连续调用多个托管方法
+2. 需要循环时（如逐级降级），**每一步之间重新检查管道**
+3. 周期性调用（如锁定数值）**间隔不要低于 200ms**，并做**同值限流**
+4. 调用后若 `mono_AttachedProcess` 变 nil，重新 `LaunchMonoDataCollector()` 再继续
+
+### 8.5 ⚠️ 硬规矩：不要手工改托管容器的内部结构
+
+**另一个拿崩溃换来的教训。**
+
+为了让一个未激活的状态"看起来激活"，我曾手工往 `Dictionary` 的 entries 空闲槽位写条目、
+改 `_count` / `_version`、还修 `buckets` 链表。**数据层验证全对**（模拟 `ContainsKey` 能命中），
+但**游戏崩溃** —— 破坏了哈希表与游戏内部状态的一致性。
+
+**正解：能调方法就调方法**（`ForceActivate` / `Set` / `TrySetLevel`…），
+方法内部会一并处理好事件通知与 UI 刷新。**手工改容器只能读，不能写。**
+
+### 8.6 判据：什么时候"必须"调方法而不能只写字段
+
+| 现象 | 结论 |
+|---|---|
+| 写字段后**回读正确**，但**界面不动** | 字段是**显示副本**，值的变更靠**事件通知**驱动 UI |
+| 写字段后游戏下一次更新就**覆盖回来** | 字段是副本，真源在别处（往往在父类的字段里） |
+| 找真源的办法 | 看**继承链**（`mono_class_getParent`）——`enumFields` 只列**本类声明**的字段，继承来的看不到 |
+
+**实战案例**：`ArouseGaugeManager.currentarouse` 写不动界面 → 真源是父类
+`SexualHeatManager._heat`（在 `PlayerSexualArousalManager` 的 `+0x40`，继承而得）→
+调 `SexualHeatManager.Set(value)` 后**数据与 UI 同时同步**。
+
+### 8.7 调用后 Mono "掉线"是正常现象
+
+独立 CE 里调用托管方法后，`mono_AttachedProcess` 常变成 nil。
+**这不是崩溃**，重新 `LaunchMonoDataCollector()` 即可恢复。
+（打包成 trainer 后由 CE 自己管理，不受此影响。）
+
+---
+
+## 9. 与其它文档的关系
 
 | 想做什么 | 看哪 |
 |---|---|
 | 摸清一个 Mono 游戏的数据结构 | **本文** |
+| **调用游戏自己的方法改状态** | **本文 §8** |
 | 把找到的地址固定成重启后仍有效的条目 | `CE稳定地址方法.md` |
 | 把条目打包成双击即用的独立修改器 | `CE独立修改器方法.md` |
 | CE 通道怎么用（DSH 怎么驱动 CE） | `CE工具用法.md` |
