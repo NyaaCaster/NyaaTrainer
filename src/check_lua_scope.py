@@ -96,14 +96,31 @@ def check(lines):
 
     func_pat = re.compile(r"\blocal\s+function\s+([A-Za-z_][A-Za-z0-9_]*)")
     local_pat = re.compile(r"\blocal\s+([A-Za-z_][A-Za-z0-9_]*)")
+    # `local a, b, c = ...` —— 抓逗号列表（只取到 `=` 之前）
+    multi_local_pat = re.compile(r"\blocal\s+([^=]*?)\s*=")
     funcparam_pat = re.compile(r"\bfunction\b[^()]*\(([^)]*)\)")
     forvar_pat = re.compile(r"\bfor\s+([A-Za-z_,\s][^=in]*?)\s*(?:=|in)\b")
 
     for lineno, code in lines:
+        # 先匹配 `local function name`（优先，避免被 local_pat 误吃）
         for m in func_pat.finditer(code):
             decl_first.setdefault(m.group(1), lineno)
+        # 再匹配普通 `local name` / `local a, b`
+        #   注意排除 `local function`（已由上面处理）与 `function` 关键字本身
         for m in local_pat.finditer(code):
-            decl_first.setdefault(m.group(1), lineno)
+            name = m.group(1)
+            if name in KEYWORDS:
+                continue
+            decl_first.setdefault(name, lineno)
+        # `local a, b, c` 形式：local_pat 只抓到第一个名字，补上其余的
+        for m in multi_local_pat.finditer(code):
+            head = m.group(1)
+            # 去掉 `function xxx` 的情况
+            head = re.sub(r"\bfunction\b\s*[A-Za-z_][A-Za-z0-9_]*", "", head)
+            for nm in head.split(","):
+                nm = nm.strip()
+                if nm and nm not in KEYWORDS and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", nm):
+                    decl_first.setdefault(nm, lineno)
         for m in funcparam_pat.finditer(code):
             for p in m.group(1).split(","):
                 p = p.strip()

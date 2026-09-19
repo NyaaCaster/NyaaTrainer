@@ -241,51 +241,52 @@ for i = 0, f.ControlCount - 1 do
 end
 ```
 
-#### 4.1.2 图标：exe 文件图标 + 窗口左上角图标（✅ 2026-09-20 实测）
+#### 4.1.2 图标：exe 文件图标 + 窗口左上角图标
 
 **统一用仓库内的 `src/NyaaTrainer_icon.ico`**（7 个尺寸：16/24/32/48/64/128/256，全 32bpp）。
-`src/NyaaTrainer_icon.svg` 是**矢量源文件**，只在"将来要改尺寸/换色时重新导出 ico"用 ——
-**不要直接拿 svg 打包**：PE 图标资源与 LCL 的 `TIcon` 都只接受位图，svg 需先转位图且会掉质量。
+`src/NyaaTrainer_icon.svg` 是**矢量源文件**，供改尺寸/换色时重新导出 ico 用，
+**不参与打包**（PE 图标资源与 LCL 的 `TIcon` 都只接受位图）。
 
-**两处图标要分别设置，机制完全不同**：
+**两处图标分别设置，机制不同**：
 
 | 位置 | 谁负责 | 做法 |
 |---|---|---|
-| **exe 文件图标**（explorer 里看到的） | `make_trainer.py` | 写 PE 资源 `RT_ICON` + `RT_GROUP_ICON`（已内置，默认自动用仓库 ico） |
+| **exe 文件图标**（explorer 里看到的） | `make_trainer.py` | 写 PE 资源 `RT_ICON` + `RT_GROUP_ICON` |
 | **窗口左上角图标** | **表脚本** | `createPicture().loadFromFile()` 后赋给 `f.Icon` |
 
-**为什么窗口图标不能直接用 exe 里的资源**：`make_trainer.py` 已把 ico **一并打进归档**，
-解压后在 `getCheatEngineDir()` 下，表脚本按这个路径读文件即可：
+**打包流程已完全自包含** —— `make_trainer.py` 会现场从 ICO 派生两种形态：
+
+| 派生 | 用途 | 为什么 |
+|---|---|---|
+| **传统 DIB 格式** | 写进 exe 的 `RT_ICON` | PE 图标资源必须是 `BITMAPINFOHEADER` + BGRA + AND 掩码 |
+| **PNG（32×32 / 16×16）** | 打进归档，供窗口图标用 | CE 的 `Picture.loadFromFile()` 需要 PNG |
+
+> 两者需求相反是**源 ICO 的格式决定的**（本仓库的 ICO 是 Vista+ 的「内嵌 PNG」格式）。
+> 这两个转换都已在 `make_trainer.py` 内实现（`ico_to_dib_ico()` / `ico_extract_png()`），
+> **换图标只需替换 `src/NyaaTrainer_icon.ico`，其余全自动。**
+
+**表脚本设置窗口图标**（PNG 解压后在 `getCheatEngineDir()` 下）：
 
 ```lua
 pcall(function()
   local d = getCheatEngineDir()
   if d:sub(-1) ~= '\\' then d = d .. '\\' end
   local pic = createPicture()
-  pic.loadFromFile(d .. 'NyaaTrainer_icon.ico')
-  f.Icon = pic.Icon
+  pic.loadFromFile(d .. 'NyaaTrainer_icon_32.png')
+  if pic.Icon.Width > 0 then f.Icon = pic.Icon end   -- 宽度 0 表示加载失败
 end)
 ```
 
-> ⚠️ **必须用 `createPicture()` + `loadFromFile()`**。
-> `createIcon(w, h)` 只造一张**空白**图标，不能直接加载文件（实测）。
-
-**`make_trainer.py` 的图标相关参数**：
+**`make_trainer.py` 的图标参数**：
 
 ```powershell
-# 默认：自动用同目录的 NyaaTrainer_icon.ico（exe 图标 + 打进归档供窗口用）
+# 默认：自动用同目录的 NyaaTrainer_icon.ico（exe 图标 + 派生 PNG 供窗口用）
 python make_trainer.py --table x.CT --out x.exe --ce-dir <CE_DIR>
 
 # 换图标 / 跳过
 python make_trainer.py ... --icon <别的.ico>
 python make_trainer.py ... --no-icon
 ```
-
-**实现上的一个坑（写 PE 资源时）**：`MAKEINTRESOURCE` 在 ctypes 里**必须用 `c_void_p`**，
-不能 cast 成 `LPCWSTR` —— 后者会被当成"真正的字符串指针"去解引用，
-传 `c_void_p(1)` 这种值会让 `UpdateResource` 报 **1359 (ERROR_INTERNAL_ERROR)**。
-另外**不要在同一批次里"先删旧图标再写新的"**（同样报 1359）；
-要替换已有图标应分两次 `Begin/End` 提交。
 
 ### 4.2 三个"看着能用、实际不能用"的 API（✅ 全部实测）
 
@@ -704,8 +705,6 @@ CE 读不到用户会话的字体设置，按 100% 度量算；用户原生启�
 | **㉘ 周期任务静默失败、日志空白** | 手动能改、定时器里的重设从不生效，且没任何日志 | ① `pcall(fn)` 会吞掉返回值 —— 周期任务**成功/失败都要留痕**（含心跳）；② CE 定时器**可能跑在没管道的线程**上，`pipeOK()` 要能**建立**管道而不只是检查（见 `01-mono-recon.md` §8.4） |
 | **㉙ `Font.Style` 设不了粗体** | 写 `Font.Style = 1` / `fsBold` / `{fsBold}` 都"不报错"，但回读**恒为 `[]`**（`fsBold` 全局在 CE 里还是 nil） | LCL 的 `Style` 是**集合类型**，CE 的 Lua 里设不了。**改用 `Font.Size` 区分层级**（可写，实测有效）+ 颜色 + 分隔线 |
 | **㉚ `createIcon(w,h)` 不能加载文件** | 想设窗口图标却拿到空白图标 | 用 `createPicture()` → `loadFromFile(path)` → `f.Icon = pic.Icon`，见 §4.1.2 |
-| **㉛ `MAKEINTRESOURCE` 用 `LPCWSTR` cast** | 写 PE 图标资源报 **1359 (ERROR_INTERNAL_ERROR)** | ctypes 里必须用 `c_void_p`；cast 成 `LPCWSTR` 会被当字符串指针解引用 |
-| **㉜ 同批次先删后写同一资源** | 同样报 1359 | PE 资源更新的"删旧+写新"要**分两次 `Begin/End`** 提交 |
 
 ---
 

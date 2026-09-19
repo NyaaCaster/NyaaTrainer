@@ -160,7 +160,7 @@ pcall(function() dofile(getCheatEngineDir() .. 'dsh_lib.lua') end)
 19. **周期任务必须留痕**：`pcall(fn)` 会吞掉返回值 → 故障变成"日志一片空白"。周期重设要记录成功/失败（含心跳）；限流时间戳**只在成功后**更新。
 20. **⭐ 修改器界面按四模块分区**（用户定稿的规范）：① **工具条**（修改器本体功能：刷新等，与游戏无关的放这里）② **数值修改**（用户可填任意值）③ **状态开关**（无数值的通断状态）④ **定值选项**（取值被游戏硬约束、互斥、不允许填任意值 —— **叫「定值选项」不是「定制选项」**）。状态开关类项目**不得**同时出现在数值区；底部只放一次性动作。见 `docs/03-standalone-trainer.md` §4.4.1。
 21. **数值行控件排布**（用户定稿）：`[属性][当前] | [0][-][+] [MAX] | [输入框][应用] | [锁定]`。`0/-/+/MAX` 一组（直接改值，不需应用）；`输入框+应用` 一组（需提交）。`-/+` 与 `0`、`锁定` 用**正方形**控件，`MAX` 略宽（≤高度 1.5 倍，保证三字符不截断）。**上限性质的项隐藏 `0`**（=0 可能让游戏出错）；**无运行时上限的项隐藏 `MAX`**；隐藏时**保留占位**以维持按钮矩阵对齐。
-22. **⭐ 图标统一用 `src/NyaaTrainer_icon.ico`**：`make_trainer.py` 默认自动写 exe 图标并把它打进归档；表脚本用 `createPicture().loadFromFile()` 设窗口图标（**不能用 `createIcon`**，它只造空白图标）。写 PE 资源时 `MAKEINTRESOURCE` 必须用 `c_void_p`（cast 成 `LPCWSTR` 会报 1359）。见 `docs/03-standalone-trainer.md` §4.1.2。
+22. **⭐ 图标统一用 `src/NyaaTrainer_icon.ico`**（`src/NyaaTrainer_icon.svg` 是矢量源，不参与打包）：`make_trainer.py` 会现场派生两种形态 —— 写进 exe 的 **DIB 格式**（PE 资源用）与打进归档的 **PNG**（窗口图标用），换图标只需替换那个 ico。表脚本用 `createPicture().loadFromFile()` + `f.Icon = pic.Icon` 设窗口图标。见 `docs/03-standalone-trainer.md` §4.1.2。
 23. **模块标题不要用 `Font.Style` 设粗体**：LCL 的 `Style` 是集合类型，CE 的 Lua 里设不了（不报错但回读恒为 `[]`）。用 **`Font.Size`**（可写）+ 颜色 + 分隔线来区分层级。
 
 ---

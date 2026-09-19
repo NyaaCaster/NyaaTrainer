@@ -774,6 +774,24 @@ local function tickLocks()
 end
 
 -- ---------------------------------------------------------------- 面板
+--[[
+  设置"开关"控件的显示状态。
+
+  ⚠️ 踩坑（用户报"开关类选项无法勾选中"）：
+    CE 的 Lua 里没有可用的 createCheckBox，所以开关是用
+    createButton + '□'/'■' 符号【模拟】的。
+    一开始我在 refresh() 里写 `r.Checked = on` —— 但【按钮没有 Checked 属性】，
+    pcall 把失败吞掉，符号永远停在初始的 '□'，看起来就是"点了没反应"。
+    （实际内存值已经改了，日志里 [switch] XXX -> 1 能证明，只是界面没反馈。）
+
+  正解：显式改 Caption（符号）+ 颜色。
+]]
+local function setToggleState(btn, on)
+  if not btn then return end
+  pcall(function() btn.Caption = on and '■' or '□' end)
+  pcall(function() btn.Font.Color = on and 0x0040C0FF or 0x00FFFFFF end)
+end
+
 local function refresh()
   local i
   for i = 1, #WANT do
@@ -817,6 +835,10 @@ local function refresh()
       else
         r.cur.Caption = tostring(v)
       end
+      -- 锁定开关的【符号】要跟着锁定态更新
+      -- （原先只改了"当前值"文字的颜色，没动开关符号 —— 用户会以为没点上）
+      setToggleState(r.lock, locked)
+
       if r.lock then
         if not locked then
           r.cur.Font.Color = 0x00FFFFFF
@@ -842,7 +864,7 @@ local function refresh()
       local it = findItem(sw.key)
       local v = it and rd(it, a) or readInteger(a)
       local on = (v ~= nil and v ~= 0)
-      pcall(function() r.Checked = on end)
+      setToggleState(r, on)
     end
   end
 
@@ -1037,6 +1059,7 @@ local function mkLockToggle(owner, x, y, side, fn)
   return b
 end
 
+
 -- 按字高保守估算文字宽度。
 --   汉字实际宽度 ≈ 1 个字高（CE 默认字体下混排时略宽），故系数取 1.35
 --   （原为 1.15，实测在用户会话会把「体力硬上限」这类 5 字标签算窄、导致截断）。
@@ -1060,6 +1083,32 @@ local function buildPanel()
   -- ⚠️ 必须用数字：LCL 枚举常量（stAlways 等）在 CE 的 Lua 全局里不存在（是 nil），
   --    写 f.ShowInTaskbar = stAlways 会静默失败（回读仍是 stDefault）。
   pcall(function() f.ShowInTaskbar = 1 end)
+  -- 窗口左上角图标（替换原 CE 的图标）
+  --
+  -- ⚠️ 关键：**必须用 PNG，不能用 ICO**！
+  --   实测（2026-09-20）：CE 的 Picture.loadFromFile() 加载本项目的 .ico 时
+  --   "返回 true 但实际是空的" —— Icon/Bitmap/PNG/Graphic 的 Width/Height 全是 0，
+  --   赋给 f.Icon 后窗体图标不变（表现为"图标没换上"）。
+  --   原因：该 ICO 是 Vista+ 的【内嵌 PNG】格式，CE 的解析器只认传统位图格式。
+  --   改用 PNG 后 picture.Icon 立刻有内容（32x32），f.Icon 回读也是 32x32。
+  --
+  -- 图标来源：make_trainer.py 会把 NyaaTrainer_icon_32.png 打进归档，
+  --   解压后位于 getCheatEngineDir() 下。
+  pcall(function()
+    local d = getCheatEngineDir()
+    if d:sub(-1) ~= '\\' then d = d .. '\\' end
+    local pngPath = d .. 'NyaaTrainer_icon_32.png'
+    local pic = createPicture()
+    pic.loadFromFile(pngPath)
+    local w = 0
+    pcall(function() w = pic.Icon.Width or 0 end)
+    if w > 0 then
+      f.Icon = pic.Icon
+      say(string.format('window icon loaded: %dx%d (%s)', w, pic.Icon.Height, pngPath))
+    else
+      say('window icon FAILED (size 0): ' .. pngPath)
+    end
+  end)
   setFont(f)
 
   local TH = math.floor(FS * 1.4)
@@ -1110,8 +1159,10 @@ local function buildPanel()
   local X_ZERO  = X_CUR + W_NUM + GAP
   local X_MINUS = X_ZERO + SIDE + 4
   local X_PLUS  = X_MINUS + SIDE + 4
+  -- MAX 按钮比正方形略宽（用户拍板：不超过高度的 1.5 倍，保证 "MAX" 三个字符完整）
+  local W_MAXB  = math.floor(SIDE * 1.45)
   local X_MAX   = X_PLUS + SIDE + 4
-  local X_EDIT  = X_MAX + SIDE + GAP
+  local X_EDIT  = X_MAX + W_MAXB + GAP
   local X_APPLY = X_EDIT + W_EDIT + 6
   local X_LOCK  = X_APPLY + W_APPLY + GAP
   local FW_ROW  = X_LOCK + SIDE + PAD
@@ -1132,32 +1183,14 @@ local function buildPanel()
   local H_TBAR  = SIDE + PAD
   local FW_TBAR = PAD + W_TBBTN + PAD
 
-  -- 底部"一次性动作"按钮（用户拍板：只放一次性动作，不放任何锁定类按钮）
-  local quick = {
-    { cap = '重置锁定', fn = function()
-        -- 一次性把所有锁定关掉。注意这是【清理动作】不是"锁定类按钮"——
-        -- 目的是避免残留锁定在用户不知情时持续改值。
-        local i
-        local n = 0
-        for i = 1, #WANT do
-          if LOCKS[WANT[i].key] then
-            LOCKS[WANT[i].key] = false
-            LOCKVAL[WANT[i].key] = nil
-            n = n + 1
-          end
-        end
-        say(string.format('[quick] 已解除 %d 个锁定', n))
-        refresh()
-      end },
-    { cap = '全部拉满', fn = function()
-        local i
-        for i = 1, #WANT do
-          local it = WANT[i]
-          if it.maxKey then maxVal(it.key) end
-        end
-        refresh()
-      end },
-  }
+  -- 底部按钮区（用户拍板：本版本清空）
+  --
+  -- 删掉的两项及理由：
+  --   「重置锁定」—— 与每个数值行各自的锁定开关构成【多处维护】，
+  --                  且"重置"的语义有风险（用户可能没意识到会解除哪些锁定）
+  --   「全部拉满」—— 一次性把所有值推到上限，存在数值风险
+  -- 结论：宁可少一个便利按钮，也不要一个"可能造成意外"的按钮。
+  local quick = {}
 
   local qw, qsum = {}, 0
   local i
@@ -1195,6 +1228,7 @@ local function buildPanel()
     W_NUM   = sq(W_NUM, 50)
     W_EDIT  = sq(W_EDIT, 60)
     W_APPLY = sq(W_APPLY, 40)
+    W_MAXB  = math.max(math.floor(SIDE * 1.25), sq(W_MAXB, 40))
     W_LVB   = sq(W_LVB, 26)
     W_TBBTN = sq(W_TBBTN, 46)
     GAP     = sq(GAP, 6)
@@ -1204,7 +1238,7 @@ local function buildPanel()
     X_MINUS = X_ZERO + SIDE + 4
     X_PLUS  = X_MINUS + SIDE + 4
     X_MAX   = X_PLUS + SIDE + 4
-    X_EDIT  = X_MAX + SIDE + GAP
+    X_EDIT  = X_MAX + W_MAXB + GAP
     X_APPLY = X_EDIT + W_EDIT + 6
     X_LOCK  = X_APPLY + W_APPLY + GAP
     local fwRows = X_LOCK + SIDE + PAD
@@ -1239,19 +1273,46 @@ local function buildPanel()
   --   0 / - / + / MAX 是一组（直接改值）；输入框 + 应用 是一组（需提交）。
   --   上限性质的项不显示 0（禁归零）；无上限概念的项不显示 MAX（但保留占位）。
   -- ================================================================
+  -- 模块标题：用【更大字号 + 醒目颜色 + 底部横线】与内容区分
+  --
+  -- ⚠️ 踩坑：LCL 的 Font.Style 是【集合类型】，在 CE 的 Lua 里设不了 ——
+  --   写 l.Font.Style = 1 / fsBold / {fsBold} 全都"不报错但回读恒为 []"
+  --   （且 fsBold 这个全局常量在 CE 里根本不存在，是 nil）。
+  --   正解：改用【字号】区分（Font.Size 可写，实测有效），再用颜色强化。
+  -- 标题字号：只比正文大 2pt。之前用 FS+4（16pt）在 12pt 正文旁显得过大，
+  -- 且【布局仍按 12pt 的 TH 算】，标题实际字高更大 -> 与下一行重叠。
+  -- 现在 TITLE_FS 与 SEC_H 都基于【实际字高】推算。
+  local TITLE_FS = FS + 2
+  local TITLE_TH = math.floor(TITLE_FS * (TH / FS))     -- 按正文的字高/字号比例推算标题字高
   local function sectionTitle(txt, yy)
-    local l = mkLabel(f, PAD, yy + math.floor(PAD / 2), FW - PAD * 2, LBL_H, txt)
-    pcall(function() l.Font.Style = 1 end)   -- 粗体，作分区标题
+    local l = mkLabel(f, PAD, yy, FW - PAD * 2, TITLE_TH + 6, txt)
+    pcall(function() l.Font.Size = TITLE_FS end)
+    pcall(function() l.Font.Color = 0x0060D0FF end)   -- 亮橙，与正文白色区分
+    -- 标题下的分隔线（用一条细 Label 模拟横线）
+    local line = createLabel(f)
+    line.Left = PAD
+    line.Top = yy + TITLE_TH + 4
+    line.Width = FW - PAD * 2
+    line.Height = 2
+    pcall(function() line.Caption = '' end)
+    pcall(function() line.Color = 0x00505050 end)
     return l
   end
 
+  -- 模块标题区占用的高度
+  -- 模块标题区高度 = 标题实际字高 + 分隔线 + 上下留白
+  --   之前误用 TITLE_FS（字号数值）当高度，而字高≈字号×2.7，
+  --   导致标题溢出到下一行、与列标题重叠。
+  local SEC_H = TITLE_TH + 22
+
   sectionTitle('数值修改', y)
-  y = y + HEAD_H
-  mkLabel(f, X_NAME, y - math.floor(PAD / 2), W_NAME, LBL_H, '属性')
-  mkLabel(f, X_CUR,  y - math.floor(PAD / 2), W_NUM,  LBL_H, '当前')
-  mkLabel(f, X_EDIT, y - math.floor(PAD / 2), W_EDIT + 6 + W_APPLY, LBL_H, '设定值')
-  mkLabel(f, X_LOCK, y - math.floor(PAD / 2), SIDE, LBL_H, '锁定')
-  y = y + math.floor(TH * 0.6)
+  y = y + SEC_H
+  -- 列标题行：与第一行数据之间留足垂直间隔（原先会与内容重叠）
+  mkLabel(f, X_NAME, y, W_NAME, TH + 6, '属性')
+  mkLabel(f, X_CUR,  y, W_NUM,  TH + 6, '当前')
+  mkLabel(f, X_EDIT, y, W_EDIT + 6 + W_APPLY, TH + 6, '设定值')
+  mkLabel(f, X_LOCK, y, SIDE, TH + 6, '锁定')
+  y = y + TH + math.floor(PAD * 1.6)
 
   for i = 1, #WANT do
     local it = WANT[i]
@@ -1269,7 +1330,10 @@ local function buildPanel()
     mkSquareButton(f, X_PLUS,  y, SIDE, '+', function() bump(k, 1) end)
     -- MAX 按钮：仅定义了 maxKey 的项
     if it.maxKey then
-      mkSquareButton(f, X_MAX, y, SIDE, 'MAX', function() maxVal(k) end)
+      -- 用户要求：MAX 文本【缩小字号】，让视觉不拥挤。
+      -- 按钮尺寸保持原样（W_MAXB，约 1.45 倍正方形宽），**不动**。
+      local mb = mkButton(f, X_MAX, y, W_MAXB, SIDE, 'MAX', function() maxVal(k) end)
+      pcall(function() mb.Font.Size = FS - 3 end)
     end
 
     local ed = mkEdit(f, X_EDIT, y + math.floor((SIDE - (LBL_H + 6)) / 2), W_EDIT, LBL_H + 6)
@@ -1287,7 +1351,7 @@ local function buildPanel()
   --   控件用【开关】而不是"开/关"两个按钮（两个按钮既是重复入口又占宽度）。
   -- ================================================================
   sectionTitle('状态开关', y)
-  y = y + HEAD_H
+  y = y + SEC_H
   for i = 1, #SWITCHES do
     local sw = SWITCHES[i]
     mkLabel(f, X_NAME, y + math.floor(PAD / 2), W_NAME, LBL_H, sw.label)
@@ -1312,7 +1376,7 @@ local function buildPanel()
   --     定值选项 = 取值由游戏限定，只能从给定档位里挑
   -- ================================================================
   sectionTitle('定值选项', y)
-  y = y + HEAD_H
+  y = y + SEC_H
   for i = 1, #FAMILIES do
     local fam = FAMILIES[i]
     local yRow = y

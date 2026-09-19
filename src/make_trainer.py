@@ -37,6 +37,7 @@ import shutil
 import struct
 import sys
 import tempfile
+import zlib
 from ctypes import wintypes
 
 RT_RCDATA = 10
@@ -155,6 +156,209 @@ def set_resources(exe_path, resources):
         raise OSError("EndUpdateResource failed: %d" % ctypes.get_last_error())
 
 
+# ==========================================================================
+# 图标工具（内联版）
+#
+# 用户提供的 NyaaTrainer_icon.ico 是 Vista+ 的「内嵌 PNG」格式 —— 每个尺寸
+# 的数据段本身就是一段完整 PNG。而两处使用方对格式的要求【正好相反】：
+#
+#   ① exe 的 PE 图标资源（RT_ICON）必须是【传统 DIB】：
+#      BITMAPINFOHEADER + BGRA 位图 + AND 掩码。
+#      把 PNG 数据直接写进 RT_ICON，Windows 解析不了（小尺寸会显示空白占位图）。
+#      -> 用 ico_to_dib_ico() 转换后再写。
+#
+#   ② 窗口左上角图标（表脚本用 CE 的 Picture.loadFromFile 读）必须是【PNG】：
+#      CE 的 ICO 解析器只认传统位图，读内嵌 PNG 得到的是 0x0（空的）。
+#      -> 用 ico_extract_png() 把内嵌 PNG 原样抠出来随包分发。
+#
+# 下面两个函数把这两步都做掉，打包流程自包含，不需要额外脚本。
+# ==========================================================================
+
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+
+
+def _ico_parse(blob):
+    """解析 ICO，返回 [{w,h,cc,res,planes,bpp,data}, ...]"""
+    if len(blob) < 6:
+        raise ValueError("ico too small")
+    reserved, itype, count = struct.unpack_from("<HHH", blob, 0)
+    if reserved != 0 or itype != 1:
+        raise ValueError("not an icon file (type=%d)" % itype)
+    out = []
+    for i in range(count):
+        off = 6 + i * 16
+        w, h, cc, res, planes, bpp, size, doff = struct.unpack_from("<BBBBHHII", blob, off)
+        if doff + size > len(blob):
+            raise ValueError("ico entry %d out of range" % i)
+        out.append({
+            "w": w or 256, "h": h or 256, "cc": cc, "res": res,
+            "planes": planes, "bpp": bpp,
+            "data": blob[doff:doff + size],
+        })
+    return out
+
+
+def _ico_build(entries):
+    """按 ICO 结构重新打包 entries -> bytes"""
+    n = len(entries)
+    blob = struct.pack("<HHH", 0, 1, n)
+    dataoff = 6 + n * 16
+    bodies = []
+    for e in entries:
+        w = 0 if e["w"] >= 256 else e["w"]
+        h = 0 if e["h"] >= 256 else e["h"]
+        blob += struct.pack("<BBBBHHII", w, h, e.get("cc", 0), e.get("res", 0),
+                            e.get("planes", 1), e.get("bpp", 32),
+                            len(e["data"]), dataoff)
+        bodies.append(e["data"])
+        dataoff += len(e["data"])
+    return blob + b"".join(bodies)
+
+
+def _png_decode(data):
+    """极简 PNG 解码（8bit 非隔行），返回 (w, h, RGBA bytes)。"""
+    if data[:8] != PNG_SIG:
+        raise ValueError("not png")
+    pos = 8
+    w = h = bitdepth = colortype = None
+    idat = b""
+    plte = None
+    trns = None
+    while pos < len(data):
+        ln = struct.unpack_from(">I", data, pos)[0]
+        tag = data[pos + 4:pos + 8]
+        body = data[pos + 8:pos + 8 + ln]
+        pos += 12 + ln
+        if tag == b"IHDR":
+            w, h, bitdepth, colortype, comp, filt, interlace = struct.unpack(">IIBBBBB", body)
+            if bitdepth != 8:
+                raise ValueError("only 8-bit png supported (got %d)" % bitdepth)
+            if interlace != 0:
+                raise ValueError("interlaced png not supported")
+        elif tag == b"PLTE":
+            plte = body
+        elif tag == b"tRNS":
+            trns = body
+        elif tag == b"IDAT":
+            idat += body
+        elif tag == b"IEND":
+            break
+
+    raw = zlib.decompress(idat)
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[colortype]
+    stride = w * channels
+
+    # 反滤波
+    out = bytearray()
+    prev = bytearray(stride)
+    p = 0
+    for _y in range(h):
+        ft = raw[p]; p += 1
+        line = bytearray(raw[p:p + stride]); p += stride
+        if ft == 1:
+            for i in range(channels, stride):
+                line[i] = (line[i] + line[i - channels]) & 0xFF
+        elif ft == 2:
+            for i in range(stride):
+                line[i] = (line[i] + prev[i]) & 0xFF
+        elif ft == 3:
+            for i in range(stride):
+                a = line[i - channels] if i >= channels else 0
+                line[i] = (line[i] + ((a + prev[i]) >> 1)) & 0xFF
+        elif ft == 4:
+            for i in range(stride):
+                a = line[i - channels] if i >= channels else 0
+                b = prev[i]
+                c = prev[i - channels] if i >= channels else 0
+                pp = a + b - c
+                pa, pb, pc = abs(pp - a), abs(pp - b), abs(pp - c)
+                pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                line[i] = (line[i] + pr) & 0xFF
+        out += line
+        prev = line
+
+    rgba = bytearray(w * h * 4)
+    for i in range(w * h):
+        if colortype == 6:
+            rgba[i * 4:i * 4 + 4] = out[i * 4:i * 4 + 4]
+        elif colortype == 2:
+            rgba[i * 4 + 0] = out[i * 3 + 0]
+            rgba[i * 4 + 1] = out[i * 3 + 1]
+            rgba[i * 4 + 2] = out[i * 3 + 2]
+            rgba[i * 4 + 3] = 255
+        elif colortype == 3:
+            idx = out[i]
+            rgba[i * 4 + 0] = plte[idx * 3 + 0]
+            rgba[i * 4 + 1] = plte[idx * 3 + 1]
+            rgba[i * 4 + 2] = plte[idx * 3 + 2]
+            rgba[i * 4 + 3] = trns[idx] if (trns and idx < len(trns)) else 255
+        elif colortype == 0:
+            g = out[i]
+            rgba[i * 4 + 0] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = g
+            rgba[i * 4 + 3] = 255
+        elif colortype == 4:
+            g = out[i * 2 + 0]
+            a = out[i * 2 + 1]
+            rgba[i * 4 + 0] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = g
+            rgba[i * 4 + 3] = a
+    return w, h, bytes(rgba)
+
+
+def _rgba_to_dib(w, h, rgba):
+    """RGBA -> 传统 DIB（BITMAPINFOHEADER + XOR 位图 + AND 掩码）。"""
+    xor = bytearray()
+    for y in range(h - 1, -1, -1):
+        for x in range(w):
+            o = (y * w + x) * 4
+            r, g, b, a = rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3]
+            xor += bytes((b, g, r, a))
+
+    mask_row_bytes = ((w + 31) // 32) * 4
+    mask = bytearray()
+    for y in range(h - 1, -1, -1):
+        row = bytearray(mask_row_bytes)
+        for x in range(w):
+            if rgba[(y * w + x) * 4 + 3] < 128:
+                row[x // 8] |= (0x80 >> (x % 8))
+        mask += row
+
+    hdr = struct.pack("<IiiHHIIiiII", 40, w, h * 2, 1, 32, 0,
+                      len(xor) + len(mask), 0, 0, 0, 0)
+    return bytes(hdr) + bytes(xor) + bytes(mask)
+
+
+def ico_to_dib_ico(ico_bytes):
+    """把（可能是内嵌 PNG 格式的）ICO 转成传统 DIB 格式的 ICO bytes。
+
+    已经是传统格式的条目原样保留；内嵌 PNG 的条目解码后转 DIB。
+    """
+    entries = _ico_parse(ico_bytes)
+    out = []
+    for e in entries:
+        if e["data"][:8] == PNG_SIG:
+            w, h, rgba = _png_decode(e["data"])
+            out.append({"w": w, "h": h, "cc": 0, "res": 0, "planes": 1, "bpp": 32,
+                        "data": _rgba_to_dib(w, h, rgba)})
+        else:
+            out.append(e)
+    return _ico_build(out)
+
+
+def ico_extract_png(ico_bytes, sizes=(32, 16)):
+    """从内嵌 PNG 格式的 ICO 里把指定尺寸的 PNG 原样抠出来。
+
+    返回 [(size, png_bytes), ...]。非内嵌 PNG 的条目会被跳过
+    （那种情况需要另做位图->PNG 编码，本流程的设计前提是内嵌 PNG 格式）。
+    """
+    entries = _ico_parse(ico_bytes)
+    res = []
+    for want in sizes:
+        e = next((x for x in entries if x["w"] == want), None)
+        if e and e["data"][:8] == PNG_SIG:
+            res.append((want, e["data"]))
+    return res
+
+
 # --------------------------------------------------------------------------
 # 图标资源（替换 exe 文件图标）
 #
@@ -211,26 +415,42 @@ def _build_group_icon(entries):
     return out
 
 
-def set_icon(exe_path, ico_path):
+def set_icon_bytes(exe_path, ico_bytes):
     """把 .ico 写进 exe 的图标资源（RT_ICON + RT_GROUP_ICON）。
 
-    先删掉原有的图标资源再写，避免旧图标的 RT_ICON 残留导致 explorer 取错。
+    核心策略：**直接覆盖 stub 原有的图标组 ID**，而不是新增一组。
+
+    实测背景（2026-09-20）：
+      CE 的 stub 自带 `RT_GROUP_ICON 101`（引用 `RT_ICON 1`）。
+      最初我用 ID 1 写新图标 -> exe 里出现【两组图标】（1 与 101），
+      Windows 取的是 101 那组，所以显示的不是我们的图标；
+      而且我的 RT_ICON 1 还覆盖了它引用的位图 -> 显示错乱。
+
+      试过"先删旧组再写"：删除不存在的资源会返回 1359
+      （ERROR_INTERNAL_ERROR），同样不可靠。
+
+      **正解：用与 stub 相同的 ID 覆盖写入**（组 101 + 位图 1..N），
+      这样只有一组图标，且 explorer 一定取它。
+      组 ID 优先用 101（CE stub 的既有 ID），同时**也写一份到 ID 1**，
+      以兼容"没有 101 的 stub"。
     """
-    with open(ico_path, "rb") as f:
-        blob = f.read()
+    blob = ico_bytes
     entries, images = _parse_ico(blob)
+
+    # 图标资源要占用的组 ID。
+    #
+    # ⚠️ 只写【一个】组 ID，避免"两组图标并存"造成歧义 ——
+    #   实测：同时写 101 和 1 时 exe 里会有两个图标组，
+    #   ExtractIconEx 能提取到 2 个，资源管理器取哪一个不确定；
+    #   用户实测在"详细信息"视图（小尺寸）下取到了【空白占位图】。
+    #   101 是 CE stub 自带的组 ID，直接覆盖它最干净（不新增孤儿组）。
+    GROUP_IDS = (101,)
 
     h = k32.BeginUpdateResourceW(exe_path, False)
     if not h:
         raise OSError("BeginUpdateResource failed: %d" % ctypes.get_last_error())
     try:
-        # 注意：不在这里"先删旧图标资源"。
-        #   实测在同一批次里先删后写会返回 1359 (ERROR_INTERNAL_ERROR)；
-        #   而且 stub 本身没有图标资源，首次写入无需删除。
-        #   若将来要【替换】已有图标，正确的做法是分两次 Begin/End 更新：
-        #   第一次只删、EndUpdateResource 提交；第二次再写。
-
-        # ① 写各尺寸位图（资源 ID 从 1 递增）
+        # ① 写各尺寸位图（资源 ID 从 1 递增）—— 两组共用同一批位图
         for idx, img in enumerate(images):
             buf = ctypes.create_string_buffer(img, len(img))
             if not k32.UpdateResourceW(h, MAKEINTRESOURCE(RT_ICON),
@@ -238,14 +458,15 @@ def set_icon(exe_path, ico_path):
                                        ctypes.cast(buf, wintypes.LPVOID), len(img)):
                 raise OSError("UpdateResource(RT_ICON %d) failed: %d"
                               % (entries[idx][7], ctypes.get_last_error()))
-
-        # ③ 写图标组
+        # ② 写图标组（覆盖 stub 的既有 ID，避免"两组图标并存"）
         grp = _build_group_icon(entries)
-        gbuf = ctypes.create_string_buffer(grp, len(grp))
-        if not k32.UpdateResourceW(h, MAKEINTRESOURCE(RT_GROUP_ICON),
-                                   MAKEINTRESOURCE(1), _SIG_LANG,
-                                   ctypes.cast(gbuf, wintypes.LPVOID), len(grp)):
-            raise OSError("UpdateResource(RT_GROUP_ICON) failed: %d" % ctypes.get_last_error())
+        for gid in GROUP_IDS:
+            gbuf = ctypes.create_string_buffer(grp, len(grp))
+            if not k32.UpdateResourceW(h, MAKEINTRESOURCE(RT_GROUP_ICON),
+                                       MAKEINTRESOURCE(gid), _SIG_LANG,
+                                       ctypes.cast(gbuf, wintypes.LPVOID), len(grp)):
+                raise OSError("UpdateResource(RT_GROUP_ICON %d) failed: %d"
+                              % (gid, ctypes.get_last_error()))
     except Exception:
         k32.EndUpdateResourceW(h, True)   # 丢弃
         raise
@@ -253,7 +474,8 @@ def set_icon(exe_path, ico_path):
         raise OSError("EndUpdateResource failed: %d" % ctypes.get_last_error())
 
     sizes = ", ".join("%dx%d" % (e[0] or 256, e[1] or 256) for e in entries)
-    print("      icon: %d sizes (%s)" % (len(entries), sizes))
+    print("      icon: %d sizes (%s) -> group ids %s"
+          % (len(entries), sizes, ", ".join(str(g) for g in GROUP_IDS)))
 
 
 # --------------------------------------------------------------------------
@@ -304,13 +526,44 @@ def main():
 
     # 图标路径解析（一次算好，后面 exe 资源与归档都用它）
     #   默认取本脚本同目录的 NyaaTrainer_icon.ico；--no-icon 可整体跳过。
+    here = os.path.dirname(os.path.abspath(__file__))
     icon_path = args.icon
     if icon_path is None and not args.no_icon:
-        cand = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NyaaTrainer_icon.ico")
+        cand = os.path.join(here, "NyaaTrainer_icon.ico")
         icon_path = cand if os.path.exists(cand) else None
     if icon_path and not os.path.exists(icon_path):
         sys.exit("指定的图标不存在: %s" % icon_path)
-    icon_for_archive = icon_path
+
+    # ------------------------------------------------------------------
+    # 图标处理（自包含，无需外部脚本）
+    #
+    # NyaaTrainer_icon.ico 是 Vista+ 的「内嵌 PNG」格式，而两处使用方
+    # 对格式的要求【正好相反】：
+    #
+    #   ① exe 的 PE 图标资源（RT_ICON）需要【传统 DIB】
+    #      —— 直接写 PNG 数据的话 Windows 解析不了（小尺寸显示空白占位图）
+    #   ② 窗口左上角图标（CE 的 Picture.loadFromFile 读）需要【PNG】
+    #      —— CE 的 ICO 解析器只认传统位图，读内嵌 PNG 得到 0x0（空的）
+    #
+    # 所以打包时现场做两份派生（函数见文件末尾"图标工具"节）：
+    #   ico_to_dib_ico()   -> exe 图标用的 DIB 格式 ICO（写内存，不落盘）
+    #   ico_extract_png()  -> 打进归档的 PNG（供窗口图标用）
+    # ------------------------------------------------------------------
+    icon_dib_bytes = None
+    icon_pngs = []          # [(文件名, bytes), ...]
+    if not args.no_icon and icon_path:
+        with open(icon_path, "rb") as f:
+            _ico_raw = f.read()
+        try:
+            icon_dib_bytes = ico_to_dib_ico(_ico_raw)
+        except Exception as _e:
+            print("      警告: ICO 转 DIB 失败(%s)，exe 图标将直接用源 ICO" % _e)
+            icon_dib_bytes = _ico_raw
+        try:
+            for _sz, _png in ico_extract_png(_ico_raw, (32, 16)):
+                icon_pngs.append(("NyaaTrainer_icon_%d.png" % _sz, _png))
+        except Exception as _e:
+            print("      警告: 提取窗口图标 PNG 失败: %s" % _e)
 
     print("[1/4] 解析模板")
     if args.tiny:
@@ -339,13 +592,14 @@ def main():
                 n = add_file(entries, os.path.join(ce, rel), folder)
                 print("      + %-34s %10d" % (rel, n))
 
-        # 图标也打进归档（放 extracted\ 根）：
-        #   表脚本要用 createPicture().loadFromFile() 设【窗口左上角图标】，
-        #   而它读不到 exe 的资源段，只能读文件 —— 所以把 ico 随包分发，
-        #   脚本用 getCheatEngineDir()..'NyaaTrainer_icon.ico' 定位（见文档 §4.1.2）。
-        if icon_for_archive:
-            n = add_file(entries, icon_for_archive, "")
-            print("      + %-34s %10d" % (os.path.basename(icon_for_archive), n))
+        # 图标 PNG 打进归档（放 extracted\ 根）：
+        #   表脚本用 createPicture().loadFromFile() 设【窗口左上角图标】，
+        #   它读不到 exe 的资源段，只能读文件 —— 所以随包分发，
+        #   脚本用 getCheatEngineDir()..'NyaaTrainer_icon_32.png' 定位。
+        #   必须用 PNG 而不是 ICO（原因见上面图标处理那段说明）。
+        for _name, _data in icon_pngs:
+            entries.append((_name, "", _data))
+            print("      + %-34s %10d" % (_name, len(_data)))
 
         archive = build_archive(entries, args.level)
         print("      archive = %d bytes (%d files, level=%d)" % (len(archive), len(entries), args.level))
@@ -360,8 +614,10 @@ def main():
     set_resources(out, resources)
 
     # exe 文件图标（explorer 里看到的那个）
-    if icon_path:
-        set_icon(out, icon_path)
+    #   用现场转换出的【传统 DIB 格式】字节 —— 源 ICO 是"内嵌 PNG"格式，
+    #   直接写进 RT_ICON 的话 Windows 解析不了（小尺寸会显示空白占位图）。
+    if icon_dib_bytes:
+        set_icon_bytes(out, icon_dib_bytes)
 
     print("完成: %s  (%d bytes)" % (out, os.path.getsize(out)))
 
