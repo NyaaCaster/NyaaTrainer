@@ -69,7 +69,9 @@ cp config.example.yaml config.yaml
 | `src/ce_mcp_server.py` | **标准 MCP 服务端**（Agent 首选接入方式） |
 | `src/ce-lua.ps1` | **主通道**：任意 Lua（多行/任意字符）→ 执行 → 取回文本 |
 | `src/ce-mcp.ps1` | 8 个成品工具（读/写内存、AOB 扫描、反汇编…），无 Python 依赖 |
-| `src/make_trainer.py` | **通用 trainer 生成器**：解 `.cepack` → 收文件 → 建归档 → 写 PE 资源 |
+| `src/make_trainer.py` | **通用 trainer 生成器**：解 `.cepack` → 收文件 → 建归档 → 写 PE 资源 + **图标** |
+| `src/NyaaTrainer_icon.ico` | ★ **统一图标**（7 尺寸）——`make_trainer.py` 默认用它写 exe 图标，并打进归档供窗口图标用 |
+| `src/NyaaTrainer_icon.svg` | 图标的**矢量源文件**（改尺寸/换色时从它重新导出 ico，不直接参与打包） |
 | `src/check_lua_scope.py` | **Lua 作用域自查**：查「使用早于 local 声明」（这类 bug 不报错，极难排查） |
 | `src/CheatEngine-Manage.ps1` | CE 安装管理：Status / Sync / Migrate / Uninstall |
 | `lua/dsh_lib.lua` | CE 侧 Lua 往返桥（`dsh_out` / `dsh_eval` / `dsh_run_file`） |
@@ -157,7 +159,9 @@ pcall(function() dofile(getCheatEngineDir() .. 'dsh_lib.lua') end)
 18. **锁定中的显示要读真值**：显示目标值会把"锁定失效"掩盖掉。真值 ≠ 目标时**标红**，让失败立刻可见。
 19. **周期任务必须留痕**：`pcall(fn)` 会吞掉返回值 → 故障变成"日志一片空白"。周期重设要记录成功/失败（含心跳）；限流时间戳**只在成功后**更新。
 20. **⭐ 修改器界面按四模块分区**（用户定稿的规范）：① **工具条**（修改器本体功能：刷新等，与游戏无关的放这里）② **数值修改**（用户可填任意值）③ **状态开关**（无数值的通断状态）④ **定值选项**（取值被游戏硬约束、互斥、不允许填任意值 —— **叫「定值选项」不是「定制选项」**）。状态开关类项目**不得**同时出现在数值区；底部只放一次性动作。见 `docs/03-standalone-trainer.md` §4.4.1。
-21. **数值行控件排布**（用户定稿）：`[属性][当前] | [0][-][+][MAX] | [输入框][应用] | [锁定]`。`0/-/+/MAX` 一组（直接改值，不需应用）；`输入框+应用` 一组（需提交）。`-/+` 与 `0`、`MAX`、`锁定` 都用**正方形**控件。**上限性质的项隐藏 `0`**（=0 可能让游戏出错）；**无运行时上限的项隐藏 `MAX`**；隐藏时**保留占位**以维持按钮矩阵对齐。
+21. **数值行控件排布**（用户定稿）：`[属性][当前] | [0][-][+] [MAX] | [输入框][应用] | [锁定]`。`0/-/+/MAX` 一组（直接改值，不需应用）；`输入框+应用` 一组（需提交）。`-/+` 与 `0`、`锁定` 用**正方形**控件，`MAX` 略宽（≤高度 1.5 倍，保证三字符不截断）。**上限性质的项隐藏 `0`**（=0 可能让游戏出错）；**无运行时上限的项隐藏 `MAX`**；隐藏时**保留占位**以维持按钮矩阵对齐。
+22. **⭐ 图标统一用 `src/NyaaTrainer_icon.ico`**：`make_trainer.py` 默认自动写 exe 图标并把它打进归档；表脚本用 `createPicture().loadFromFile()` 设窗口图标（**不能用 `createIcon`**，它只造空白图标）。写 PE 资源时 `MAKEINTRESOURCE` 必须用 `c_void_p`（cast 成 `LPCWSTR` 会报 1359）。见 `docs/03-standalone-trainer.md` §4.1.2。
+23. **模块标题不要用 `Font.Style` 设粗体**：LCL 的 `Style` 是集合类型，CE 的 Lua 里设不了（不报错但回读恒为 `[]`）。用 **`Font.Size`**（可写）+ 颜色 + 分隔线来区分层级。
 
 ---
 

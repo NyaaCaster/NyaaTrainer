@@ -40,7 +40,12 @@ import tempfile
 from ctypes import wintypes
 
 RT_RCDATA = 10
-MAKEINTRESOURCE = lambda i: ctypes.cast(ctypes.c_void_p(i), wintypes.LPCWSTR)
+
+# MAKEINTRESOURCE：Windows 的资源"名字"要么是字符串指针，要么是
+# 【把一个 16 位整数塞进指针位】。ctypes 里必须用 c_void_p 表达 ——
+# 不能 cast 成 LPCWSTR：那会被当成【真正的字符串指针】去解引用，
+# c_void_p(1) 这种值会让 UpdateResource 报 1359 (ERROR_INTERNAL_ERROR)。
+MAKEINTRESOURCE = lambda i: ctypes.c_void_p(i)
 
 # 惰性常量：参与 PE 资源语言 ID 的取值（见 set_resources），不影响任何业务逻辑
 _SIG = "Nyaa be with you."
@@ -50,7 +55,8 @@ _SIG_LANG = (sum(_SIG.encode("utf-8")) % 1)      # 恒为 0，但表达式真实
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 k32.BeginUpdateResourceW.argtypes = [wintypes.LPCWSTR, wintypes.BOOL]
 k32.BeginUpdateResourceW.restype = wintypes.HANDLE
-k32.UpdateResourceW.argtypes = [wintypes.HANDLE, wintypes.LPCWSTR, wintypes.LPCWSTR,
+# lpType / lpName 用 c_void_p（允许传整数形式的 MAKEINTRESOURCE）
+k32.UpdateResourceW.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
                                 wintypes.WORD, wintypes.LPVOID, wintypes.DWORD]
 k32.UpdateResourceW.restype = wintypes.BOOL
 k32.EndUpdateResourceW.argtypes = [wintypes.HANDLE, wintypes.BOOL]
@@ -136,8 +142,10 @@ def set_resources(exe_path, resources):
     try:
         for name, blob in resources:
             buf = ctypes.create_string_buffer(blob, len(blob))
+            # 资源名是【字符串】时，显式取宽字符缓冲的地址（argtypes 是 c_void_p）
+            namebuf = ctypes.create_unicode_buffer(name)
             if not k32.UpdateResourceW(h, MAKEINTRESOURCE(RT_RCDATA),
-                                       ctypes.c_wchar_p(name), _SIG_LANG,
+                                       ctypes.cast(namebuf, ctypes.c_void_p), _SIG_LANG,
                                        ctypes.cast(buf, wintypes.LPVOID), len(blob)):
                 raise OSError("UpdateResource(%s) failed: %d" % (name, ctypes.get_last_error()))
     except Exception:
@@ -145,6 +153,107 @@ def set_resources(exe_path, resources):
         raise
     if not k32.EndUpdateResourceW(h, False):
         raise OSError("EndUpdateResource failed: %d" % ctypes.get_last_error())
+
+
+# --------------------------------------------------------------------------
+# 图标资源（替换 exe 文件图标）
+#
+# Windows 的 exe 图标由【两个资源】协作构成：
+#   RT_ICON       (3)  —— 每个尺寸一张位图，资源名是【数字 ID】（1,2,3...）
+#   RT_GROUP_ICON (14) —— 图标组，把多个 RT_ICON 串成一个"多尺寸图标"，
+#                         资源名用 1（explorer 取的就是组）
+#
+# .ico 文件本身就是「一个 ICONDIR + N 个 ICONDIRENTRY + N 段位图数据」，
+# 所以做法是：解析 .ico，把每段位图写成 RT_ICON（ID 递增），
+# 再按 ICONDIRENTRY 拼一个 GRPICONDIR 写成 RT_GROUP_ICON。
+#
+# 为什么用 .ico 而不是 .svg：Windows 的 PE 图标资源只接受位图；
+#   LCL/Delphi（CE 用的框架）的 TIcon 同样只认 ICO/BMP。
+#   .svg 是矢量源文件，留作"将来改尺寸/换色时重新导出 ico"用。
+# --------------------------------------------------------------------------
+
+RT_ICON = 3
+RT_GROUP_ICON = 14
+
+
+def _parse_ico(blob):
+    """解析 .ico，返回 (entries, images)
+       entries: [(width, height, colorcount, reserved, planes, bitcount, size, id)]
+       images:  [bytes, ...]  每段位图原始数据
+    """
+    if len(blob) < 6:
+        raise ValueError("ico too small")
+    reserved, itype, count = struct.unpack_from("<HHH", blob, 0)
+    if reserved != 0 or itype != 1:
+        raise ValueError("not an icon file (type=%d)" % itype)
+    entries = []
+    images = []
+    for i in range(count):
+        off = 6 + i * 16
+        w, h, cc, res, planes, bpp, size, dataoff = struct.unpack_from("<BBBBHHII", blob, off)
+        if dataoff + size > len(blob):
+            raise ValueError("ico entry %d out of range" % i)
+        # RT_ICON 的资源 ID 从 1 开始
+        entries.append((w, h, cc, res, planes, bpp, size, i + 1))
+        images.append(blob[dataoff:dataoff + size])
+    return entries, images
+
+
+def _build_group_icon(entries):
+    """按 GRPICONDIR 结构拼出 RT_GROUP_ICON 的数据。
+       结构：ICONDIR(6) + N * GRPICONDIRENTRY(14)
+       GRPICONDIRENTRY 与 ICONDIRENTRY 的区别：最后 4 字节是【资源 ID】而非文件偏移。
+    """
+    n = len(entries)
+    out = struct.pack("<HHH", 0, 1, n)
+    for (w, h, cc, res, planes, bpp, size, rid) in entries:
+        out += struct.pack("<BBBBHHIH", w, h, cc, res, planes, bpp, size, rid)
+    return out
+
+
+def set_icon(exe_path, ico_path):
+    """把 .ico 写进 exe 的图标资源（RT_ICON + RT_GROUP_ICON）。
+
+    先删掉原有的图标资源再写，避免旧图标的 RT_ICON 残留导致 explorer 取错。
+    """
+    with open(ico_path, "rb") as f:
+        blob = f.read()
+    entries, images = _parse_ico(blob)
+
+    h = k32.BeginUpdateResourceW(exe_path, False)
+    if not h:
+        raise OSError("BeginUpdateResource failed: %d" % ctypes.get_last_error())
+    try:
+        # 注意：不在这里"先删旧图标资源"。
+        #   实测在同一批次里先删后写会返回 1359 (ERROR_INTERNAL_ERROR)；
+        #   而且 stub 本身没有图标资源，首次写入无需删除。
+        #   若将来要【替换】已有图标，正确的做法是分两次 Begin/End 更新：
+        #   第一次只删、EndUpdateResource 提交；第二次再写。
+
+        # ① 写各尺寸位图（资源 ID 从 1 递增）
+        for idx, img in enumerate(images):
+            buf = ctypes.create_string_buffer(img, len(img))
+            if not k32.UpdateResourceW(h, MAKEINTRESOURCE(RT_ICON),
+                                       MAKEINTRESOURCE(entries[idx][7]), _SIG_LANG,
+                                       ctypes.cast(buf, wintypes.LPVOID), len(img)):
+                raise OSError("UpdateResource(RT_ICON %d) failed: %d"
+                              % (entries[idx][7], ctypes.get_last_error()))
+
+        # ③ 写图标组
+        grp = _build_group_icon(entries)
+        gbuf = ctypes.create_string_buffer(grp, len(grp))
+        if not k32.UpdateResourceW(h, MAKEINTRESOURCE(RT_GROUP_ICON),
+                                   MAKEINTRESOURCE(1), _SIG_LANG,
+                                   ctypes.cast(gbuf, wintypes.LPVOID), len(grp)):
+            raise OSError("UpdateResource(RT_GROUP_ICON) failed: %d" % ctypes.get_last_error())
+    except Exception:
+        k32.EndUpdateResourceW(h, True)   # 丢弃
+        raise
+    if not k32.EndUpdateResourceW(h, False):
+        raise OSError("EndUpdateResource failed: %d" % ctypes.get_last_error())
+
+    sizes = ", ".join("%dx%d" % (e[0] or 256, e[1] or 256) for e in entries)
+    print("      icon: %d sizes (%s)" % (len(entries), sizes))
 
 
 # --------------------------------------------------------------------------
@@ -181,6 +290,9 @@ def main():
     ap.add_argument("--no-decompressor", action="store_true", help="不写 DECOMPRESSOR 资源")
     ap.add_argument("--tiny", action="store_true", help="微型模式（依赖已安装的 CE）")
     ap.add_argument("--level", type=int, default=9, help="压缩级别 0-9")
+    ap.add_argument("--icon", default=None,
+                    help="exe 图标（.ico）。默认用同目录的 NyaaTrainer_icon.ico")
+    ap.add_argument("--no-icon", action="store_true", help="不写图标资源")
     args = ap.parse_args()
 
     ce = os.path.abspath(args.ce_dir)
@@ -189,6 +301,16 @@ def main():
 
     if not os.path.exists(table):
         sys.exit("找不到表文件: %s" % table)
+
+    # 图标路径解析（一次算好，后面 exe 资源与归档都用它）
+    #   默认取本脚本同目录的 NyaaTrainer_icon.ico；--no-icon 可整体跳过。
+    icon_path = args.icon
+    if icon_path is None and not args.no_icon:
+        cand = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NyaaTrainer_icon.ico")
+        icon_path = cand if os.path.exists(cand) else None
+    if icon_path and not os.path.exists(icon_path):
+        sys.exit("指定的图标不存在: %s" % icon_path)
+    icon_for_archive = icon_path
 
     print("[1/4] 解析模板")
     if args.tiny:
@@ -216,6 +338,15 @@ def main():
             for rel, folder in MONO_FILES:
                 n = add_file(entries, os.path.join(ce, rel), folder)
                 print("      + %-34s %10d" % (rel, n))
+
+        # 图标也打进归档（放 extracted\ 根）：
+        #   表脚本要用 createPicture().loadFromFile() 设【窗口左上角图标】，
+        #   而它读不到 exe 的资源段，只能读文件 —— 所以把 ico 随包分发，
+        #   脚本用 getCheatEngineDir()..'NyaaTrainer_icon.ico' 定位（见文档 §4.1.2）。
+        if icon_for_archive:
+            n = add_file(entries, icon_for_archive, "")
+            print("      + %-34s %10d" % (os.path.basename(icon_for_archive), n))
+
         archive = build_archive(entries, args.level)
         print("      archive = %d bytes (%d files, level=%d)" % (len(archive), len(entries), args.level))
         resources = [("ARCHIVE", archive)]
@@ -227,6 +358,10 @@ def main():
 
     print("[4/4] 写入 PE 资源")
     set_resources(out, resources)
+
+    # exe 文件图标（explorer 里看到的那个）
+    if icon_path:
+        set_icon(out, icon_path)
 
     print("完成: %s  (%d bytes)" % (out, os.path.getsize(out)))
 
