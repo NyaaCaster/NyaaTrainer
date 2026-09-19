@@ -1,0 +1,257 @@
+# AGENT.md — Agent 作业规程（热 rule）
+
+> **本文件是 Agent 的入口**。人类阅读请看 [`README.md`](README.md)。
+>
+> 目标：把游戏里的数值 **找出来 → 固定下来 → 做成能用的程序**。
+> 四条主张：**先 dump 结构再谈扫描** / **记偏移不记地址** / **交付物是程序** / **全程可脚本化**。
+
+---
+
+## 0. 前置：读配置
+
+**开工第一件事**：读 `config.yaml`（由 `config.example.yaml` 复制而来）。
+
+```bash
+# 若不存在，先创建
+cp config.example.yaml config.yaml
+```
+
+`config.yaml` 里的关键路径：
+
+| 键 | 含义 |
+|---|---|
+| `paths.cheat_engine` | CE 安装目录（`<CE_DIR>`） |
+| `paths.games_root` | 游戏根目录 |
+| `paths.temp_dir` | 临时产物目录（留空用系统临时目录） |
+| `cheat_engine.pipe_name` | LuaServer 管道名（默认 `CELUASERVER`） |
+| `games[]` | 各游戏项目登记（code / dir / process / table） |
+
+**若 `config.yaml` 缺失或路径为空**：
+
+1. 读 `config.example.yaml` 的 `tools` 段拿工具来源地址
+2. 检查工具是否已安装；没装就提示用户安装
+3. **把探测到的实际路径写回 `config.yaml`**，然后继续
+
+**下文所有 `$CE_DIR` / `$GAMES_DIR` 都指这两个配置值，不要硬编码。**
+
+---
+
+## 1. 文档索引（`docs/`）
+
+四份方法论文档，**按"从零到成品"的顺序**：
+
+| # | 文档 | 解决什么 | 何时看 |
+|---|---|---|---|
+| ① | [`docs/01-mono-recon.md`](docs/01-mono-recon.md) | 拿到一个没碰过的 **Unity Mono** 游戏，怎么摸清"哪个类的哪个字段是 HP" | **起点**。不知道数据在哪时 |
+| ② | [`docs/02-stable-address.md`](docs/02-stable-address.md) | 把找到的地址**固化成重启后仍有效**的条目（4 种方法 + 分引擎） | 地址重启就失效时 |
+| ③ | [`docs/03-standalone-trainer.md`](docs/03-standalone-trainer.md) | 打包成**双击即用的独立 exe**（含小面板 UI） | 要交付给用户时 |
+| ④ | [`docs/04-ce-bridge.md`](docs/04-ce-bridge.md) | CE 与本仓库的**通道**（Agent 怎么驱动 CE） | 查命令、配通道时 |
+
+```
+① 摸清数据结构  →  ② 固定成稳定条目  →  ③ 打包成独立程序
+                         ↑
+                    ④ 全程靠它驱动（通道）
+```
+
+**要点速览**
+
+- **① Mono 侦察**：为什么别一上来扫内存（4 理由 + 两项目效率对比）／核心 5 步（列程序集 → dump 类清单 → 按名字锁候选 → dump 字段偏移 → 沿引用链找实例）／**两种数据形态**（静态字段型 vs 实例字段型）／验证四步／9 条坑位／`淫白の御供` 实战记录
+- **② 稳定地址**：稳定条目三形态／7 步总流程／**方法 A** 写·读·执行断点（含数据断点 trap 语义）／**方法 B** 多级指针／**方法 C** Mono 静态字段 + `identify` 反查／**方法 D** GUI 指针扫描／两次筛选法／11 条踩坑
+- **③ 独立修改器**：格式逆向（`stub + PE 资源 ARCHIVE/DECOMPRESSOR`、`.cepack`）／**无 GUI 全自动生成**／11 个必打包文件／小面板 UI（含**四个"看着能用其实不能用"的 API**）／退出行为与残留进程／**DPI 陷阱**／14 条坑位
+- **④ CE 通道**：三条通道（`ce-lua.ps1` 任意 Lua ／ `ce-mcp.ps1` 8 个成品工具 ／ `ce_mcp_server.py` 标准 MCP 服务端）／跨会话原理／各 Agent 客户端接入法／安全开关
+
+---
+
+## 2. 代码索引
+
+| 文件 | 作用 |
+|---|---|
+| `src/ce_mcp_server.py` | **标准 MCP 服务端**（Agent 首选接入方式） |
+| `src/ce-lua.ps1` | **主通道**：任意 Lua（多行/任意字符）→ 执行 → 取回文本 |
+| `src/ce-mcp.ps1` | 8 个成品工具（读/写内存、AOB 扫描、反汇编…），无 Python 依赖 |
+| `src/make_trainer.py` | **通用 trainer 生成器**：解 `.cepack` → 收文件 → 建归档 → 写 PE 资源 |
+| `src/CheatEngine-Manage.ps1` | CE 安装管理：Status / Sync / Migrate / Uninstall |
+| `lua/dsh_lib.lua` | CE 侧 Lua 往返桥（`dsh_out` / `dsh_eval` / `dsh_run_file`） |
+| `lua/dsh_stable.lua` | Mono **静态字段**稳定条目框架（`resolve` / `installAll` / `identify`） |
+
+**CE 侧需要加载的引导**（追加到 `$CE_DIR\main.lua` 末尾，详见 `docs/04-ce-bridge.md`）：
+
+```lua
+pcall(function() openLuaServer('<pipe_name>') end)
+pcall(function() dofile(getCheatEngineDir() .. 'dsh_lib.lua') end)
+```
+
+> `lua/dsh_lib.lua` 需复制到 `$CE_DIR\` 下（CE 从自己的目录加载）。
+
+---
+
+## 3. 样板索引（`examples/`）
+
+| 项目 | 表 | 数据形态 | 定位链 |
+|---|---|---|---|
+| `パンドラメイズ260427` | `examples/pandora/stable.CT` | **静态字段型** | `VariableF.currentSAN + 0x58`（JIT 内联静态地址） |
+| `淫白の御供` | `examples/iyohaku/stable.CT`<br>`examples/iyohaku/stable.lua` | **实例字段型** | `GameManager.Instance → +0x20 → GameData → +字段偏移` |
+
+**两个样例正好覆盖两种形态** —— 新项目照着最像的那个改。
+
+> `.CT` 与 `.CETRAINER` **是同一套 XML**，可直接喂给 `make_trainer.py`。
+
+---
+
+## 4. 标准作业流程（SOP）
+
+```
+① 侦察引擎        看模块：mono-2.0-bdwgc.dll = Unity Mono
+   |
+② 摸清数据结构    -> docs/01-mono-recon.md
+   |
+③ 写入验证        改一个值 -> 界面/进度条跟着变 -> 用户确认
+   |
+④ 固化地址        -> docs/02-stable-address.md
+   |
+⑤ 跨进程验证      重启游戏 -> 重新解析 -> 数值仍正确
+   |
+⑥ 打包修改器      -> docs/03-standalone-trainer.md (make_trainer.py)
+   |
+⑦ 交付            修改器 exe 放进游戏目录
+```
+
+### 每步验收判据（不可跳）
+
+| 步 | 判据 |
+|---|---|
+| ② | 读出的数值**自洽**（比例与界面吻合 + 旁证字段说得通） |
+| ③ | **写入测试**：改值 → 界面变化 → **用户确认** |
+| ⑤ | **重启游戏**后脚本仍能解析出**新地址**且数值正确 |
+| ⑥ | 修改器能在**干净环境**（其它 CE 全关、游戏重启过）下弹出面板并解析成功 |
+
+---
+
+## 5. 硬规矩
+
+1. **改动前先备份**：`<CE_DIR>\main.lua` 等有 `.orig-backup` 的，改前确认备份在。
+2. **不硬编码路径**：一切路径从 `config.yaml` 拼接；仓库内文件用相对路径。
+3. **不要动用户的其它程序**：只操作明确指定的游戏/进程（曾有擅自改无关安装的教训）。
+4. **写入必回读**：任何 `writeInteger` 后都要 `readInteger` 确认，且**验证完要还原**。
+5. **表脚本里禁止裸 `<` 和 `&`**：`.CT` 是 XML，会**静默**导致脚本不执行（见 `docs/03-standalone-trainer.md` §5 坑①）。
+6. **一个游戏一个表**：命名 `<code>_stable.CT`，与游戏目录同级管理。
+7. **验证不跳步**：特别是"重启后仍有效"和"干净环境下能跑" —— 这是排除巧合的唯一手段。
+8. **两个 CE 不能同时附加同一游戏**：Mono 采集器 DLL 注入后不随 CE 退出而卸载。
+9. **自己启动的进程必须自己关**（§6）。
+10. **不要替用户关他在用的程序**（§7）。
+11. **面板尺寸必须在用户会话验证**：不同会话的字体度量可能差一倍（实测 `Font.Height` 21 vs 43），在非用户会话里看着正常的面板，用户那边可能大出一倍。
+
+---
+
+## 6. 清理规范（强制）
+
+> **教训**：曾为验证"删掉外部脚本后修改器还能不能跑"而启动修改器，检查完**忘了关**，
+> 留下 3 个进程。用户此时已关掉自己的游戏和修改器，看到进程后以为是残留 bug。
+> **悬空进程会污染用户判断，还会占着 Mono 采集器通道影响下次测试。**
+
+### 铁律一：谁启动，谁关闭
+
+验证必须**"启动 + 检查 + 关闭"三步一体**，不要跨消息留悬空进程。
+
+```powershell
+# 反例：启动了，检查完没下文
+Start-Process $trainer; Start-Sleep 50; Get-Content $log
+
+# 正例：同一段里收尾
+$p = Start-Process $trainer -PassThru
+Start-Sleep -Seconds 50
+Get-Content $log                                                                    # 检查
+Get-Process -Name '<修改器名>' -ErrorAction SilentlyContinue | Stop-Process -Force   # 关闭
+```
+
+若确实需要分离（要等用户操作），**必须在回复里写明"我启动了 X，稍后会关"**，并在下一步立即关闭。
+
+### 铁律二：涉进程的操作，收尾查四样
+
+```powershell
+# 1) 遗留进程（修改器 / CE / 游戏）
+Get-CimInstance Win32_Process |
+  Where-Object { $_.Name -match '修改器|Trainer|cheatengine|<游戏名>' } |
+  Select-Object ProcessId,Name,ExecutablePath | Format-Table -AutoSize -Wrap
+
+# 2) 临时解压目录（每个约 30 MB）
+foreach ($t in @("$env:TEMP\cetrainers", 'C:\Windows\Temp\cetrainers')) {
+  if (Test-Path $t) { Get-ChildItem $t -Directory | Select-Object FullName }
+}
+
+# 3) 自己起的调试用 CE
+Get-Process -Name 'cheatengine-x86_64*' -ErrorAction SilentlyContinue
+
+# 4) 写在临时目录的探针脚本/测试文件
+Get-ChildItem $env:TEMP -Filter '*test*' -ErrorAction SilentlyContinue
+```
+
+### 铁律三：清理要清到底
+
+| 对象 | 清理方式 |
+|---|---|
+| 修改器进程链（3 个） | `Get-Process -Name '<修改器名>' \| Stop-Process -Force` |
+| `%TEMP%\cetrainers\CETxxxx.tmp` | `Remove-Item ... -Recurse -Force`（先确认无进程占用） |
+| 调试用 CE | `Get-Process -Name 'cheatengine-x86_64*' \| Stop-Process -Force` |
+| 临时探针脚本 | 清掉自己在临时目录建的那些 |
+
+### 交付物 vs 临时物
+
+| 类别 | 例子 | 处置 |
+|---|---|---|
+| **交付物** | 修改器 exe、表 `.CT`、样板 | **保留**（游戏目录 / `examples/`） |
+| **临时物** | 进程、`cetrainers` 目录、探针脚本 | **用完即清** |
+| **证据物** | 运行日志（`*_trainer_log.txt`） | 排障期保留，结论落文档后可清 |
+
+---
+
+## 7. 不要替用户关他在用的程序（强制）
+
+> **教训**：曾为"清出干净测试基线"，一条命令里把**用户正在玩的游戏**也强杀了。
+> 用户看到的是**游戏闪退**，并一度怀疑是修改器把游戏搞崩的。
+
+- **只清自己启动的东西**；用户的游戏 / CE / 修改器 —— **先问再动**
+- 要动就说清楚：*"为了做隔离测试，需要关掉你正在运行的游戏，可以吗？"*
+- 拿不准就只做**只读检查**（`Get-CimInstance` 查状态）
+- **万一误关**：立刻承认是我做的、说明原因，不要让用户以为是他自己的软件出了问题
+
+---
+
+## 8. 签名约定
+
+本仓库所有**代码类产物**（`.py` / `.ps1` / `.lua` / `.CT` 内嵌脚本）应包含签名：
+
+```
+Nyaa be with you.
+```
+
+**要求**：非注释、非 UI 显性、**不影响业务逻辑**。推荐做法是放一个**惰性常量**，
+使其自然参与某次无副作用的计算或写入，而不是仅作为一句注释。
+
+```python
+_SIGNATURE = b"Nyaa be with you."
+```
+
+---
+
+## 9. 外部工具来源
+
+Agent 需要时按下表提示用户安装，并把路径写回 `config.yaml`：
+
+| 工具 | 用途 | 来源 | 协议 |
+|---|---|---|---|
+| **Cheat Engine 7.7** | 内存修改引擎 | <https://cheatengine.org/> · <https://github.com/cheat-engine/cheat-engine> | GPL-2.0 |
+| **Python 3.8+** | 生成器 / MCP 服务端 | <https://www.python.org/downloads/> | PSF |
+| **PowerShell 5.1+** | 通道脚本 | <https://github.com/PowerShell/PowerShell> | MIT |
+
+---
+
+## 10. 边界与免责
+
+| 事项 | 说明 |
+|---|---|
+| **仅限 Unity Mono** | 目前只跑通 Mono；IL2CPP 后端（`GameAssembly.dll`）未探索 |
+| **非 Unity 引擎** | Godot / Ren'Py / RPGMaker 等无此数据层，走传统断点+指针链（见 `docs/02-stable-address.md` §4） |
+| **反作弊** | 联网游戏或有反调试的游戏慎用；采集器注入会被检测 |
+| **安全** | `openLuaServer` 是**无认证的本地管道**（等于任意 Lua 执行），仅在本机自用环境开启 |
+| **用途** | 仅限**单机游戏**的个人学习与娱乐性修改；不得用于联机/竞技/商业场景 |

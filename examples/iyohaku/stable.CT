@@ -1,0 +1,625 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable UsesMono="1" CheatEngineTableVersion="52">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"HP"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>2</ID>
+      <Description>"MaxHP"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>3</ID>
+      <Description>"MP"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>4</ID>
+      <Description>"MaxMP"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>5</ID>
+      <Description>"Day"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>6</ID>
+      <Description>"DaysLeft"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>7</ID>
+      <Description>"Stage"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>8</ID>
+      <Description>"Deaths"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+  </CheatEntries>
+  <UserdefinedSymbols/>
+  <LuaScript>
+-- ===================================================================
+-- 淫白の御供 —— 稳定地址自动解析 + 小面板修改器
+--
+-- 定位链（Unity Mono，实例字段）：
+--     GameManager.Instance (静态单例)
+--       → +0x20  GameData            （字段名是 Data 的 backing field）
+--       → +各字段偏移                 （currentHp / maxHp / currentMp / ...）
+--
+--   与 パンドラメイズ 的差别：那个游戏数据挂在静态字段上，地址被 JIT 内联；
+--   这个游戏挂在实例上，所以每次要沿 "静态根 → Instance → GameData" 走一遍。
+--   字段偏移全部从 mono_class_enumFields 动态取，不硬编码。
+--
+-- 关于技能：游戏里没有独立的"技能点"数值。技能解锁由
+--   GameManager.CheckSkillUnlocksByMaxMP 按 maxMP 判定
+--   （训练成功 → maxMP 提升 → 达到阈值 → UnlockSkill）。
+--   所以改 MaxMP 即等价于提前解锁技能。
+--
+-- 排版说明：getScreenDPI() 恒回 96、fixDPI() 是空操作、Canvas.TextWidth 在
+-- CE 的 Lua 里是 nil —— 只有 Font.Height 可用。故字号固定 16pt，字宽按字高估算。
+-- ===================================================================
+
+local PROCESS_NAME = '淫白の御供.exe'
+local LOG_PATH = 'C:\\Windows\\Temp\\iyohaku_trainer_log.txt'
+local FS = 16                    -- 面板字号
+
+local function say(s)
+  print('[iyohaku] ' .. tostring(s))
+  pcall(function()
+    local f = io.open(LOG_PATH, 'a')
+    if f then
+      f:write(os.date('%H:%M:%S ') .. tostring(s) .. '\n')
+      f:close()
+    end
+  end)
+end
+
+pcall(function()
+  local f = io.open(LOG_PATH, 'w')
+  if f then f:write('=== iyohaku trainer ' .. os.date() .. ' ===\n'); f:close() end
+end)
+
+-- 显示名 -> GameData 字段名；step 用于 +/- 按钮
+local WANT = {
+  { key = 'HP',       field = 'currentHp' },
+  { key = 'MaxHP',    field = 'maxHp' },
+  { key = 'MP',       field = 'currentMp' },
+  { key = 'MaxMP',    field = 'maxMp' },
+  { key = 'Day',      field = 'day' },
+  { key = 'DaysLeft', field = 'remainingDays' },
+  { key = 'Stage',    field = 'reachedStage' },
+  { key = 'Deaths',   field = 'deathCount' },
+}
+
+local ADDR = {}
+local ROWS = {}
+local panel = nil
+local tries = 0
+local diagDone = false
+local needRescan = false
+local rescans = 0
+
+local function diag()
+  diagDone = true
+  say('CE dir       = ' .. tostring(getCheatEngineDir()))
+  local ap = 'n/a'
+  pcall(function() ap = getAutorunPath() end)
+  say('autorun path = ' .. tostring(ap))
+  local mods = enumModules()
+  local found = 0
+  for k, m in pairs(mods) do
+    if tostring(m.Name):find('MonoDataCollector') then
+      found = found + 1
+      say(string.format('mono module: %s @ %X', tostring(m.Name), m.Address))
+    end
+  end
+  if found == 0 then say('mono module: not loaded yet') end
+end
+
+local function ensureMono()
+  if mono_AttachedProcess and mono_AttachedProcess ~= 0 then return true end
+  if not mono_findClass then
+    pcall(function() dofile(getCheatEngineDir() .. 'autorun\\monoscript.lua') end)
+    pcall(function() reinitializeSymbolhandler(true) end)
+  end
+  if needRescan then
+    needRescan = false
+    if rescans > 3 then
+      -- 已达重扫上限
+    else
+      rescans = rescans + 1
+      pcall(function() reinitializeSymbolhandler(true) end)
+    end
+  end
+  if LaunchMonoDataCollector then
+    pcall(LaunchMonoDataCollector)
+    needRescan = true
+  end
+  return false
+end
+
+-- 解析 GameData 对象（失败返回 nil, 原因）
+local function gameData()
+  local dms = mono_enumDomains()
+  local domain = dms and dms[1]
+  if not domain then return nil, 'no mono domain' end
+  local mgr = mono_findClass('', 'GameManager')
+  if not mgr or mgr == 0 then return nil, 'GameManager not found' end
+  local sbase = mono_class_getStaticFieldAddress(domain, mgr)
+  if not sbase or sbase == 0 then return nil, 'no static data' end
+
+  local inst = nil
+  local fds = mono_class_enumFields(mgr)
+  if fds then
+    for i = 1, #fds do
+      local f = fds[i]
+      if f.isStatic and f.name:find('Instance', 1, true) then
+        inst = readPointer(sbase + f.offset)
+        break
+      end
+    end
+  end
+  if not inst or inst == 0 then return nil, 'Instance is null (未进主场景?)' end
+
+  local data = nil
+  if fds then
+    for i = 1, #fds do
+      local f = fds[i]
+      -- 编译器生成名是 Data 的 k__BackingField 形式，必须模糊匹配
+      if (not f.isStatic) and f.name:find('Data', 1, true) then
+        local p = readPointer(inst + f.offset)
+        if p and p ~= 0 then data = p break end
+      end
+    end
+  end
+  if not data or data == 0 then return nil, 'GameData is null' end
+  return data
+end
+
+local function apply()
+  local data, err = gameData()
+  if not data then return 0, err end
+  local cls = mono_findClass('', 'GameData')
+  if not cls or cls == 0 then return 0, 'GameData class not found' end
+  local fds = mono_class_enumFields(cls)
+  if not fds then return 0, 'field enum failed' end
+
+  local off = {}
+  local i
+  for i = 1, #fds do
+    local f = fds[i]
+    if not f.isStatic then off[f.name] = f.offset end
+  end
+
+  local al = getAddressList()
+  local n = 0
+  for i = 1, #WANT do
+    local k = WANT[i].key
+    local o = off[WANT[i].field]
+    if o then
+      local a = data + o
+      ADDR[k] = a
+      n = n + 1
+      local mr = nil
+      local j
+      for j = 0, al.Count - 1 do
+        local m = al.getMemoryRecord(j)
+        if m.Description == k then mr = m break end
+      end
+      if mr == nil then mr = al.createMemoryRecord() end
+      mr.Description = k
+      mr.Type = vtDword
+      mr.Address = string.format('%X', a)
+    end
+  end
+  say(string.format('resolved %d entries, GameData=%X', n, data))
+  return n
+end
+
+-- ------------------------------------------------------------------
+-- 退出处理
+--   CE 官方 trainer 模板是"三段式启动器"：
+--     ① stub（原始 exe，负责解压）
+--       ② 解压目录里的启动器
+--          ③ 真正的 CE（有窗口的那个）
+--
+--   实测结论（淫白の御供，2026-09-19）：
+--     点 X / 点「关闭」按钮 / WM_CLOSE / 强杀 ③ —— **正常路径都不会残留**，
+--     ①② 会随 ③ 一起退出。所以这里不需要外部清理脚本。
+--
+--   注意：CE 内部**发不起**"父进程退出后仍存活"的进程（os.execute 起的子进程
+--      与 CE 同属一个作业对象，CE 一退就被杀），所以不要在退出钩子里
+--      尝试调用外部 PowerShell —— 那只会拖慢退出且无效。
+-- ------------------------------------------------------------------
+
+-- 统一的"退出修改器"入口（面板的 X 和「关闭」按钮都指向它）
+local function quitTrainer()
+  pcall(closeCE)
+end
+
+-- 兼容：CE 无论怎么退都会走这里（实测 OnClose 会触发）。
+-- 目前无需额外动作，保留挂载点是为了将来有需要时能在这里插逻辑。
+pcall(function()
+  if MainForm ~= nil then
+    local prev = MainForm.OnClose
+    MainForm.OnClose = function(sender)
+      if prev then pcall(prev, sender) end
+    end
+  end
+end)
+
+-- ------------------------------------------------------------------
+-- 锁定（HP / MP）：用 timer 每 200ms 回写一次，比 CE 的 freeze 更可控
+--   玩家可以随时改锁定值；勾掉就停。
+-- ------------------------------------------------------------------
+local LOCKS = {}     -- key -> true/false
+local LOCKVAL = {}   -- key -> 要锁住的数值
+
+local function tickLocks()
+  local i
+  for i = 1, #WANT do
+    local k = WANT[i].key
+    if LOCKS[k] and ADDR[k] and LOCKVAL[k] then
+      local cur = readInteger(ADDR[k])
+      if cur ~= LOCKVAL[k] then
+        writeInteger(ADDR[k], LOCKVAL[k])
+      end
+    end
+  end
+end
+
+-- ------------------------------------------------------------------
+-- 面板
+-- ------------------------------------------------------------------
+
+local function refresh()
+  local i
+  for i = 1, #WANT do
+    local k = WANT[i].key
+    local a = ADDR[k]
+    local r = ROWS[k]
+    if r and a then
+      local v = nil
+      if LOCKS[k] then
+        v = LOCKVAL[k]                       -- 锁定中显示锁定值
+      else
+        v = readInteger(a)
+      end
+      if v == nil then v = -1 end
+      r.cur.Caption = tostring(v)
+      if r.lock then
+        r.cur.Font.Color = LOCKS[k] and 0x0020A0FF or 0x00FFFFFF
+      end
+    end
+  end
+  -- HP 比例显示
+  local hp, mx = ADDR.HP and readInteger(ADDR.HP), ADDR.MaxHP and readInteger(ADDR.MaxHP)
+  if ROWS._ratio and hp and mx and mx > 0 then
+    ROWS._ratio.Caption = string.format('HP %.1f%%   %d / %d', hp / mx * 100, hp, mx)
+  end
+end
+
+local function setVal(k, v)
+  local a = ADDR[k]
+  if a == nil then return end
+  writeInteger(a, v)
+end
+
+-- 切换锁定：开的时候用当前的"目标值"框；框为空则用当前实际值
+local function toggleLock(k)
+  local r = ROWS[k]
+  if r == nil or ADDR[k] == nil then return end
+  if LOCKS[k] then
+    LOCKS[k] = false
+    LOCKVAL[k] = nil
+    if r.lock then r.lock.Caption = '□' end
+    say('unlock ' .. k)
+  else
+    local v = tonumber(r.edit.Text)
+    if v == nil then
+      v = readInteger(ADDR[k]) or 0       -- 未填则锁当前值
+    end
+    v = math.floor(v)
+    LOCKS[k] = true
+    LOCKVAL[k] = v
+    writeInteger(ADDR[k], v)
+    r.edit.Text = ''
+    if r.lock then r.lock.Caption = '■' end
+    say(string.format('lock %s = %d', k, v))
+  end
+  refresh()
+end
+
+-- 改锁定值（锁定中直接生效）
+local function setLockVal(k, v)
+  if not LOCKS[k] then return end
+  LOCKVAL[k] = math.floor(v)
+  writeInteger(ADDR[k], LOCKVAL[k])
+end
+
+local function bump(k, d)
+  local a = ADDR[k]
+  if a == nil then return end
+  -- 锁定中就调整锁定值，否则调整实际值
+  local base = LOCKS[k] and LOCKVAL[k] or (readInteger(a) or 0)
+  local v = base + d
+  writeInteger(a, v)
+  if LOCKS[k] then LOCKVAL[k] = v end
+  refresh()
+end
+
+local function writeField(k)
+  local r = ROWS[k]
+  if r == nil then return end
+  local v = tonumber(r.edit.Text)
+  if v == nil then r.cur.Caption = '无效' return end
+  v = math.floor(v)
+  setVal(k, v)
+  if LOCKS[k] then LOCKVAL[k] = v end    -- 锁定中写入 = 改锁定值
+  r.edit.Text = ''
+  refresh()
+end
+
+local function setFont(c)
+  pcall(function() c.Font.Size = FS end)
+end
+
+local function mkLabel(owner, x, y, w, h, cap)
+  local l = createLabel(owner)
+  l.Left = x; l.Top = y; l.Width = w; l.Height = h; l.Caption = cap
+  setFont(l)
+  return l
+end
+
+local function mkEdit(owner, x, y, w, h)
+  local e = createEdit(owner)
+  e.Left = x; e.Top = y; e.Width = w; e.Height = h; e.Text = ''
+  setFont(e)
+  return e
+end
+
+local function mkButton(owner, x, y, w, h, cap, fn)
+  local b = createButton(owner)
+  b.Left = x; b.Top = y; b.Width = w; b.Height = h; b.Caption = cap
+  b.OnClick = function(sender) pcall(fn) end
+  setFont(b)
+  return b
+end
+
+-- 按字高保守估算文字宽度：ASCII 0.62 倍、宽字符 1.15 倍
+local function estW(s, th)
+  local hi = 0
+  local i
+  for i = 1, #s do if s:byte(i) > 127 then hi = hi + 1 end end
+  local wide = hi / 3
+  local ascii = #s - hi
+  return math.floor(ascii * th * 0.62 + wide * th * 1.15 + 0.5)
+end
+
+local function buildPanel()
+  if panel ~= nil then return end
+  pcall(hideAllCEWindows)
+
+  local f = createForm(false)
+  pcall(function() f.DoNotSaveInTable = true end)
+  f.Caption = '淫白の御供 修改器'
+  setFont(f)
+
+  -- 实测字高（唯一可靠度量）
+  local TH = math.floor(FS * 1.4)
+  pcall(function()
+    local probe = createEdit(f)
+    setFont(probe)
+    local v = probe.Font.Height
+    if type(v) == 'number' then TH = math.abs(v) end
+    probe.destroy()
+  end)
+
+  local PAD  = 14
+  local GAP  = 12
+  local W_NAME = math.floor(estW('DaysLeft', TH) * 1.35) + PAD * 2
+  local W_NUM  = math.floor(estW('9999', TH) * 1.70) + PAD * 2
+  local W_EDIT = W_NUM + PAD * 2
+  local W_BTN  = math.floor(estW('写入', TH) * 1.70) + PAD * 2
+  local W_MINI = math.floor(estW('+', TH) * 3.2) + PAD
+  local W_LOCK = math.floor(estW('■', TH) * 3.4) + PAD
+  local LBL_H  = TH + 8
+  local BTN_H  = TH + PAD * 2
+  local ROW_H  = TH + PAD * 2 + 10
+  local HEAD_H = TH + PAD * 2
+  local X_NAME = PAD
+  local X_CUR  = X_NAME + W_NAME + GAP
+  local X_EDIT = X_CUR + W_NUM + GAP
+  local X_M1   = X_EDIT + W_EDIT + GAP
+  local X_P1   = X_M1 + W_MINI + 4
+  local X_BTN  = X_P1 + W_MINI + GAP
+  local X_LOCK = X_BTN + W_BTN + GAP
+  local FW_ROW = X_LOCK + W_LOCK + PAD
+
+  local quick = {
+    { cap = 'HP 全满',  fn = function()
+        local mx = ADDR.MaxHP and readInteger(ADDR.MaxHP) or 0
+        setVal('HP', mx)
+        if LOCKS.HP then LOCKVAL.HP = mx end
+        refresh()
+      end },
+    { cap = 'MP 全满',  fn = function()
+        local mx = ADDR.MaxMP and readInteger(ADDR.MaxMP) or 0
+        setVal('MP', mx)
+        if LOCKS.MP then LOCKVAL.MP = mx end
+        refresh()
+      end },
+    { cap = '锁定 HP/MP', fn = function()
+        local function turnOn(k)
+          if not LOCKS[k] then
+            LOCKVAL[k] = readInteger(ADDR[k]) or 0
+            LOCKS[k] = true
+            if ROWS[k] and ROWS[k].lock then ROWS[k].lock.Caption = '■' end
+          end
+        end
+        turnOn('HP'); turnOn('MP')
+        refresh()
+      end },
+    { cap = 'MaxMP+10', fn = function() bump('MaxMP', 10) end },
+    { cap = '刷新',     fn = refresh },
+    { cap = '关闭',     fn = quitTrainer },
+  }
+  local qw, qsum = {}, 0
+  local i
+  for i = 1, #quick do
+    qw[i] = math.floor(estW(quick[i].cap, TH) * 1.35) + PAD * 2
+    qsum = qsum + qw[i]
+  end
+  qsum = qsum + GAP * (#quick - 1) + PAD * 2
+
+  local FW = math.max(FW_ROW, qsum)
+  local FH = PAD + HEAD_H + #WANT * ROW_H + (TH + PAD) + GAP + BTN_H + PAD + 8
+
+  -- 上限保护：估算公式在 200% 缩放下会低估，这里按屏幕宽度封顶，
+  -- 保证右侧的"锁定"列不会被推出屏幕（本机屏幕逻辑宽 1024，工作区同宽）
+  local SW = 1024
+  pcall(function()
+    local w = getScreenWidth()
+    if type(w) == 'number' and w > 200 then SW = w end
+  end)
+  local MAXW = math.floor(SW * 0.86)
+  if FW > MAXW then
+    -- 超了就按比例压缩各列（锁定列保底 40px，保证点得到）
+    local k = MAXW / FW
+    local function sq(v, mn) return math.max(mn or 24, math.floor(v * k)) end
+    W_NAME = sq(W_NAME, 60); W_NUM = sq(W_NUM, 50); W_EDIT = sq(W_EDIT, 60)
+    W_BTN = sq(W_BTN, 46); W_MINI = sq(W_MINI, 30); W_LOCK = sq(W_LOCK, 40)
+    GAP = sq(GAP, 6)
+    X_NAME = PAD
+    X_CUR  = X_NAME + W_NAME + GAP
+    X_EDIT = X_CUR + W_NUM + GAP
+    X_M1   = X_EDIT + W_EDIT + GAP
+    X_P1   = X_M1 + W_MINI + 4
+    X_BTN  = X_P1 + W_MINI + GAP
+    X_LOCK = X_BTN + W_BTN + GAP
+    FW = X_LOCK + W_LOCK + PAD
+    say(string.format('width capped by k=%.2f -> %d (screen %d)', k, FW, SW))
+  end
+
+  say(string.format('metrics: textH=%d  ->  form %dx%d', TH, FW, FH))
+
+  f.Width = FW
+  f.Height = FH
+
+  local y = PAD
+  mkLabel(f, X_NAME, y, W_NAME, LBL_H, '属性')
+  mkLabel(f, X_CUR,  y, W_NUM,  LBL_H, '当前')
+  mkLabel(f, X_EDIT, y, W_EDIT, LBL_H, '目标值')
+  mkLabel(f, X_LOCK, y, W_LOCK, LBL_H, '锁定')
+  y = y + HEAD_H
+
+  for i = 1, #WANT do
+    local k = WANT[i].key
+    mkLabel(f, X_NAME, y + math.floor(PAD / 2) + 2, W_NAME, LBL_H, k)
+    local cur = mkLabel(f, X_CUR, y + math.floor(PAD / 2) + 2, W_NUM, LBL_H, '?')
+    local ed = mkEdit(f, X_EDIT, y, W_EDIT, LBL_H + 6)
+    mkButton(f, X_M1, y, W_MINI, BTN_H, '-', function() bump(k, -1) end)
+    mkButton(f, X_P1, y, W_MINI, BTN_H, '+', function() bump(k, 1) end)
+    mkButton(f, X_BTN, y, W_BTN, BTN_H, '写入', function() writeField(k) end)
+    local lk = mkButton(f, X_LOCK, y, W_LOCK, BTN_H, '□', function() toggleLock(k) end)
+    ROWS[k] = { cur = cur, edit = ed, lock = lk }
+    y = y + ROW_H
+  end
+
+  -- HP 比例
+  ROWS._ratio = mkLabel(f, PAD, y, FW - PAD * 2, LBL_H, 'HP --')
+  y = y + TH + PAD
+
+  -- 底部按钮：按窗口宽度自动换行（避免超屏）
+  local qx, qy = PAD, y
+  for i = 1, #quick do
+    if qx + qw[i] > FW - PAD then
+      qx = PAD
+      qy = qy + BTN_H + 8
+    end
+    mkButton(f, qx, qy, qw[i], BTN_H, quick[i].cap, quick[i].fn)
+    qx = qx + qw[i] + GAP
+  end
+  -- 若发生了换行，窗口高度要补上
+  local extra = (qy - y)
+  if extra > 0 then
+    f.Height = f.Height + extra
+    say(string.format('quick row wrapped, extra height = %d', extra))
+  end
+
+  f.OnClose = function(sender) quitTrainer() end
+  pcall(function() f.centerScreen() end)
+  say(string.format('panel built: %dx%d', f.Width, f.Height))
+
+  panel = f
+  f.show()
+  pcall(function() f.bringToFront() end)
+
+  -- 锁定回写：200ms 一次（比刷新快，锁得稳）
+  local lt = createTimer(MainForm, false)
+  lt.Interval = 200
+  lt.OnTimer = function(sender) pcall(tickLocks) end
+  lt.Enabled = true
+  _G.iyohaku_lock_timer = lt
+
+  -- 界面刷新：500ms 一次
+  local rt = createTimer(MainForm, false)
+  rt.Interval = 500
+  rt.OnTimer = function(sender) pcall(refresh) end
+  rt.Enabled = true
+  _G.iyohaku_refresh_timer = rt
+
+  refresh()
+  say('panel created')
+end
+
+-- ------------------------------------------------------------------
+-- 主循环
+-- ------------------------------------------------------------------
+
+local function tick(sender)
+  tries = tries + 1
+  local ok, err = pcall(function()
+    if not diagDone then diag() end
+    if (getOpenedProcessID() or 0) == 0 then
+      local pid = getProcessIDFromProcessName(PROCESS_NAME)
+      if pid and pid ~= 0 then openProcess(pid) end
+    end
+    if ensureMono() then
+      local n, why = apply()
+      if n > 0 then
+        sender.Enabled = false
+        buildPanel()
+      elseif tries % 20 == 0 then
+        say('waiting: ' .. tostring(why))
+      end
+    end
+  end)
+  if not ok then say('error: ' .. tostring(err)) end
+  if tries > 239 then
+    sender.Enabled = false
+    say('gave up after ' .. tries .. ' tries')
+  end
+end
+
+local boot = createTimer(MainForm, false)
+boot.Interval = 500
+boot.OnTimer = tick
+boot.Enabled = true
+say('waiting for the mono collector...')
+  </LuaScript>
+</CheatTable>

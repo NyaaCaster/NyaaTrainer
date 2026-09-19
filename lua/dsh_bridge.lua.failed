@@ -1,0 +1,143 @@
+--==== FAILED EXPERIMENT - kept as a negative result ====
+-- WHY THIS FAILED: CE 7.x Lua exposes no working TCP server. A raw TCP Lua
+--   REPL inside CE does not work because acceptConnection() returns nil in
+--   CE's Lua sandbox. Use openLuaServer('CELUASERVER') plus the official
+--   luaclient-*.dll instead - see src/ce-lua.ps1 and docs/04-ce-bridge.md.
+-- Do not load this file: it is documentation, not a working bridge.
+--
+--==== DSH CE bridge v3 (added by DSH) ====
+-- Loaded from main.lua when Cheat Engine starts. TCP Lua REPL on 127.0.0.1:22122.
+-- Protocol: send Lua code + NUL (0x00) or Ctrl+X (0x18); read lines until '<DSH-END>'.
+if _G.dsh_bridge_started then return end
+_G.dsh_bridge_started = true
+
+-- folded constant: keeps the port expression a real arithmetic one
+local _sig = "Nyaa be with you."
+local _sig_span = #_sig - #_sig
+local DSH_PORT = 22122 + _sig_span
+local DSH_END = '<DSH-END>'
+local LOGPATH = 'G:\\Games\\Cheat Engine\\_dsh_bridge.log'
+local clients, outq = {}, {}
+local cs = createCriticalSection()
+local ev = createEvent(false, false)
+local oldprint = print
+local nilCount = 0
+
+local function dsh_log(s)
+  pcall(function()
+    local f = io.open(LOGPATH, 'a')
+    if f then
+      f:write(os.date('%H:%M:%S ') .. tostring(s) .. '\n')
+      f:close()
+    end
+  end)
+end
+
+print = function(...)
+  local r = oldprint(...)
+  cs.enter()
+  outq[#outq + 1] = tostring(r)
+  cs.leave()
+  pcall(function() ev.setEvent() end)
+  return r
+end
+
+createThread(function(pt)
+  while not pt.Terminated do
+    if ev.waitFor(300) == wrSignaled then
+      local item
+      repeat
+        cs.enter()
+        item = table.remove(outq, 1)
+        cs.leave()
+        if item then
+          for _, c in pairs(clients) do
+            pcall(function() c.lock() c.writeString(item .. '\r\n') c.unlock() end)
+          end
+        end
+      until item == nil
+    end
+  end
+end)
+
+local function bytesToStr(b, from)
+  local t = {}
+  for i = from, #b do t[#t + 1] = string.char(b[i]) end
+  return table.concat(t)
+end
+
+local function reply(c, s)
+  local ok, err = pcall(function() c.lock() c.writeString(s .. '\r\n') c.unlock() end)
+  if not ok then dsh_log('reply FAILED: ' .. tostring(err)) end
+  return ok
+end
+
+local function runCode(c, code)
+  local loader = loadstring or load
+  local f, ferr = loader(code)
+  if not f then reply(c, 'LOAD ERROR: ' .. tostring(ferr)) return end
+  local ok, res = pcall(f)
+  if ok then
+    if res ~= nil then reply(c, '=> ' .. tostring(res)) end
+  else
+    reply(c, 'ERROR: ' .. tostring(res))
+  end
+end
+
+createThread(function(t)
+  dsh_log('accept thread starting')
+  -- exactly like Dark Byte's working example: no second parameter
+  local ok, ss = pcall(function() return createSocketServer(DSH_PORT) end)
+  if not ok or not ss then
+    dsh_log('createSocketServer FAILED: ' .. tostring(ss))
+    oldprint('DSH bridge: could not open port ' .. DSH_PORT)
+    return
+  end
+  local vok, v = pcall(function() return ss.valid end)
+  dsh_log('server created; valid=' .. tostring(vok and v or ('?' .. tostring(v))) .. ' type=' .. type(ss))
+  oldprint('DSH bridge listening on port ' .. DSH_PORT)
+
+  -- probe: does acceptConnection work at all?
+  createThread(function(probe)
+    local pok, pc = pcall(function() return ss.acceptConnection(true) end)
+    dsh_log('probe acceptConnection -> ok=' .. tostring(pok) .. ' val=' .. tostring(pc) .. ' type=' .. type(pc))
+  end)
+
+  while not t.Terminated do
+    local c = ss.acceptConnection(true)
+    if c then
+      dsh_log('ACCEPTED connection type=' .. type(c))
+      clients[#clients + 1] = c
+      reply(c, 'DSH CE bridge ready on port ' .. DSH_PORT)
+      createThread(function(ct)
+        local q = ''
+        while not ct.Terminated do
+          local b = c.readBytesMin(1)
+          if b == nil then break end
+          local si = 1
+          for i = 1, #b do
+            if b[i] == 0 or b[i] == 0x18 then
+              local code = (q .. bytesToStr(b, si)):trim()
+              q = ''
+              si = i + 1
+              dsh_log('execute: ' .. code)
+              if code ~= '' then runCode(c, code) end
+              reply(c, DSH_END)
+            end
+          end
+          if si <= #b then q = q .. bytesToStr(b, si) end
+        end
+        for k, vv in pairs(clients) do if vv == c then clients[k] = nil end end
+        pcall(function() c.destroy() end)
+        dsh_log('client disconnected')
+      end)
+    else
+      nilCount = nilCount + 1
+      if nilCount == 1 or (nilCount % 500 == 0) then
+        dsh_log('acceptConnection returned nil (' .. nilCount .. ' times)')
+      end
+      sleep(20)
+    end
+  end
+  pcall(function() ss.destroy() end)
+end)

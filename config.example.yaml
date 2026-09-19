@@ -1,0 +1,129 @@
+# NyaaTrainer configuration example
+#
+# 用法：复制本文件为 config.yaml，然后按自己的环境修改路径。
+#
+#   cp config.example.yaml config.yaml
+#
+# config.yaml 已被 .gitignore 忽略，不会被提交 —— 你的本地路径不会进仓库。
+#
+# 环境变量优先级高于本文件（便于 CI 或临时覆盖）：
+#   NYAA_TRAINER_CE_DIR   覆盖 paths.cheat_engine
+#   NYAA_TRAINER_GAMES_DIR 覆盖 paths.games_root
+#   CE_DIR                仅 ce_mcp_server.py 使用，覆盖 paths.cheat_engine
+
+# ---------------------------------------------------------------------------
+# 路径配置（必填）
+# ---------------------------------------------------------------------------
+paths:
+  # Cheat Engine 安装目录（含 cheatengine-x86_64.exe、autorun/、extras/ 等）
+  # 默认安装位置通常是 C:\Program Files\Cheat Engine 7.x
+  cheat_engine: "C:\\Program Files\\Cheat Engine 7.7"
+
+  # 游戏根目录：本项目约定「一个游戏一个子目录，其下放 <code>_stable.CT 与本项目脚本」
+  # 可以指向任意位置；examples/ 下的样板可直接复制过去使用
+  games_root: "D:\\Games"
+
+  # 本仓库在本机的克隆位置（脚本用它定位 docs/、lua/、src/ 等）
+  repo_root: "."
+
+  # 临时产物目录：CE 的 mcp_req.txt / mcp_res.txt、trainer 运行日志等
+  # 留空则用系统临时目录
+  temp_dir: ""
+
+# ---------------------------------------------------------------------------
+# Cheat Engine 相关
+# ---------------------------------------------------------------------------
+cheat_engine:
+  # CE 版本（影响部分 API 行为；7.7 为当前验证版本）
+  version: "7.7"
+
+  # CE 侧 Lua 引导方式：
+  #   main_lua    - 在 <CE_DIR>\main.lua 追加引导（推荐，CE 启动即生效）
+  #   autorun     - 放进 <CE_DIR>\autorun\（CE 7.x 不执行，仅旧版可用）
+  bootstrap: "main_lua"
+
+  # LuaServer 命名管道的名字（main.lua 里 openLuaServer 的参数）
+  pipe_name: "CELUASERVER"
+
+  # mcp 文件通道的轮询间隔（毫秒），对应 extras/ceMCP.lua
+  mcp_poll_ms: 20
+
+  # MCP 请求超时（秒），对应 ce_mcp_server.py 的 CE_MCP_TIMEOUT
+  mcp_timeout_s: 10
+
+# ---------------------------------------------------------------------------
+# Agent / MCP 客户端配置
+#   多数支持 MCP 的 Agent 客户端都通过各自的配置文件登记 MCP 服务端。
+#   本仓库提供 src/ce_mcp_server.py，用下面的命令登记即可。
+# ---------------------------------------------------------------------------
+agent:
+  # 启动 MCP 服务端的标准命令（把路径替换成你的实际路径）
+  mcp_command: "python"
+  mcp_args:
+    - "./src/ce_mcp_server.py"
+  # MCP 服务端需要的环境变量（会与当前环境合并）
+  mcp_env:
+    CE_DIR: ""          # 留空则用 paths.cheat_engine
+    CE_MCP_TIMEOUT: "10"
+
+# ---------------------------------------------------------------------------
+# 各游戏项目登记
+#   每个游戏一个条目：code 用于文件命名与日志前缀，dir 是游戏目录
+# ---------------------------------------------------------------------------
+games:
+  - code: pandora
+    name: "パンドラメイズ260427"
+    dir: ""                       # 例如 "<games_root>/2026-6/パンドラメイズ260427"
+    engine: "Unity Mono"
+    data_form: "static_field"     # static_field | instance_field
+    process: "Pandora.exe"
+    table: "examples/pandora/stable.CT"
+
+  - code: iyohaku
+    name: "淫白の御供"
+    dir: ""
+    engine: "Unity Mono"
+    data_form: "instance_field"
+    process: "淫白の御供.exe"
+    table: "examples/iyohaku/stable.CT"
+
+# ---------------------------------------------------------------------------
+# 外部工具来源（开源 / 公网可获取）
+#   Agent 读到这里后，把实际路径写回 config.yaml 的 paths 段。
+# ---------------------------------------------------------------------------
+tools:
+  cheat_engine:
+    name: "Cheat Engine"
+    version: "7.7"
+    url: "https://cheatengine.org/"
+    github: "https://github.com/cheat-engine/cheat-engine"
+    license: "GPL-2.0"
+    note: "安装后用 CE 安装目录路径填 paths.cheat_engine"
+
+  python:
+    name: "Python"
+    version: "3.8+"
+    url: "https://www.python.org/downloads/"
+    note: "运行 make_trainer.py / ce_mcp_server.py 需要"
+
+  powershell:
+    name: "PowerShell"
+    version: "5.1+ (推荐 7.x)"
+    url: "https://github.com/PowerShell/PowerShell"
+    note: "运行 ce-lua.ps1 / ce-mcp.ps1 / CheatEngine-Manage.ps1 需要"
+
+# ---------------------------------------------------------------------------
+# 行为开关
+# ---------------------------------------------------------------------------
+options:
+  # 生成 trainer 时是否默认打包 Mono 支持（Unity Mono 游戏必需）
+  trainer_pack_mono: true
+
+  # 生成 trainer 时是否默认打包 win64 符号库（缺了 Mono 注入会失败）
+  trainer_pack_symbols: true
+
+  # 面板字号（影响生成出的修改器界面大小；200% 缩放下建议 12-16）
+  panel_font_size: 16
+
+  # 退出时是否尝试清理上游解压进程（CE 内部能力有限，实际靠外部看门狗）
+  cleanup_on_exit: true

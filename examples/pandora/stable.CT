@@ -1,0 +1,422 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable UsesMono="1" CheatEngineTableVersion="52">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"SAN"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>2</ID>
+      <Description>"HP"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>3</ID>
+      <Description>"maxHP"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>4</ID>
+      <Description>"MP"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>5</ID>
+      <Description>"INRAN"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>6</ID>
+      <Description>"Heroin"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>7</ID>
+      <Description>"EroPower"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>8</ID>
+      <Description>"RestNum"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0</Address>
+    </CheatEntry>
+  </CheatEntries>
+  <UserdefinedSymbols/>
+  <LuaScript>
+-- ===================================================================
+-- パンドラメイズ260427 —— 稳定地址自动解析 + 小面板修改器
+--   游戏重启后 Mono 静态字段会换址，但「类名 + 字段偏移」恒定。
+--   本脚本运行时重新解析地址（同步写入地址列表），并弹出精简控制面板。
+--
+--   排版与 DPI 说明（实测结论，别再走弯路）：
+--     * getScreenDPI() 只回 96、fixDPI() 是空操作（DesignTimePPI 等于当前值）
+--     * Canvas.TextWidth 在 CE 的 Lua 里是 nil，量不了字宽
+--     * AutoSize 对未显示的窗体不重算（恒返回默认 65x17）
+--     * 唯一可用的实测值：Font.Height（16pt -> 21px 字高）
+--   因此：字号取 16pt，字高实测，字宽按字高保守估算，留白给足。
+-- ===================================================================
+
+local PROCESS_NAME = 'Pandora.exe'
+local LOG_PATH = 'C:\\Windows\\Temp\\pandora_trainer_log.txt'
+local FS = 16           -- 面板字号
+
+local function say(s)
+  print('[Pandora] ' .. tostring(s))
+  pcall(function()
+    local f = io.open(LOG_PATH, 'a')
+    if f then
+      f:write(os.date('%H:%M:%S ') .. tostring(s) .. '\n')
+      f:close()
+    end
+  end)
+end
+
+pcall(function()
+  local f = io.open(LOG_PATH, 'w')
+  if f then f:write('=== Pandora trainer ' .. os.date() .. ' ===\n'); f:close() end
+end)
+
+-- 条目：显示名 -> VariableF 的静态字段名
+local WANT = {
+  { key = 'SAN',      field = 'currentSAN' },
+  { key = 'HP',       field = 'currentHP' },
+  { key = 'maxHP',    field = 'maxHP' },
+  { key = 'MP',       field = 'currentMP' },
+  { key = 'INRAN',    field = 'currentINRAN' },
+  { key = 'Heroin',   field = 'heroinInran' },
+  { key = 'EroPower', field = 'eroPowerRemain' },
+  { key = 'RestNum',  field = 'restNum' },
+}
+
+local ADDR = {}
+local ROWS = {}
+local panel = nil
+local tries = 0
+local diagDone = false
+local needRescan = false
+local rescans = 0
+
+local function diag()
+  diagDone = true
+  say('CE dir         = ' .. tostring(getCheatEngineDir()))
+  local ap = 'n/a'
+  pcall(function() ap = getAutorunPath() end)
+  say('autorun path   = ' .. tostring(ap))
+  local sw, sh, dpi = -1, -1, -1
+  pcall(function() sw = getScreenWidth() end)
+  pcall(function() sh = getScreenHeight() end)
+  pcall(function() dpi = getScreenDPI() end)
+  say(string.format('screen %sx%s  dpi=%s', tostring(sw), tostring(sh), tostring(dpi)))
+  local mods = enumModules()
+  local found = 0
+  for k, m in pairs(mods) do
+    if tostring(m.Name):find('MonoDataCollector') then
+      found = found + 1
+      say(string.format('mono module: %s @ %X size=%d', tostring(m.Name), m.Address, m.Size))
+    end
+  end
+  if found == 0 then say('mono module: not loaded yet') end
+end
+
+local function ensureMono()
+  if mono_AttachedProcess and mono_AttachedProcess ~= 0 then return true end
+  if not mono_findClass then
+    pcall(function() dofile(getCheatEngineDir() .. 'autorun\\monoscript.lua') end)
+    pcall(function() reinitializeSymbolhandler(true) end)
+  end
+  -- trainer 环境里新注入的 DLL 导出可能没被及时枚举，强制让 CE 重扫符号表
+  if needRescan then
+    needRescan = false
+    if rescans > 3 then
+      -- 已达重扫上限
+    else
+      rescans = rescans + 1
+      pcall(function() reinitializeSymbolhandler(true) end)
+    end
+  end
+  if LaunchMonoDataCollector then
+    pcall(LaunchMonoDataCollector)
+    needRescan = true
+  end
+  return false
+end
+
+local function apply()
+  local dms = mono_enumDomains()
+  local domain = dms and dms[1]
+  if not domain then return 0 end
+  local class = mono_findClass('', 'VariableF')
+  if not class or class == 0 then return 0 end
+  local base = mono_class_getStaticFieldAddress(domain, class)
+  if not base or base == 0 then return 0 end
+  local fields = mono_class_enumFields(class)
+  if not fields then return 0 end
+
+  local off = {}
+  local i
+  for i = 1, #fields do
+    local fd = fields[i]
+    if fd.isStatic then off[fd.name] = fd.offset end
+  end
+
+  local al = getAddressList()
+  local n = 0
+  for i = 1, #WANT do
+    local k = WANT[i].key
+    local o = off[WANT[i].field]
+    if o then
+      local a = base + o
+      ADDR[k] = a
+      n = n + 1
+      local mr = nil
+      local j
+      for j = 0, al.Count - 1 do
+        local m = al.getMemoryRecord(j)
+        if m.Description == k then mr = m; break end
+      end
+      if mr == nil then mr = al.createMemoryRecord() end
+      mr.Description = k
+      mr.Type = vtDword
+      mr.Address = string.format('%X', a)
+    end
+  end
+  say(string.format('resolved %d entries, static_data=%X', n, base))
+  return n
+end
+
+-- ------------------------------------------------------------------
+-- 面板
+-- ------------------------------------------------------------------
+
+local function refresh()
+  local i
+  for i = 1, #WANT do
+    local k = WANT[i].key
+    local a = ADDR[k]
+    local r = ROWS[k]
+    if r and a then
+      local v = readInteger(a)
+      if v == nil then v = -1 end
+      r.cur.Caption = tostring(v)
+    end
+  end
+end
+
+local function setVal(k, v)
+  local a = ADDR[k]
+  if a == nil then return end
+  writeInteger(a, v)
+end
+
+local function writeField(k)
+  local r = ROWS[k]
+  if r == nil then return end
+  local v = tonumber(r.edit.Text)
+  if v == nil then
+    r.cur.Caption = '无效'
+    return
+  end
+  setVal(k, math.floor(v))
+  r.edit.Text = ''
+  refresh()
+end
+
+local function setFont(c)
+  pcall(function() c.Font.Size = FS end)
+end
+
+local function mkLabel(owner, x, y, w, h, cap)
+  local l = createLabel(owner)
+  l.Left = x
+  l.Top = y
+  l.Width = w
+  l.Height = h
+  l.Caption = cap
+  setFont(l)
+  return l
+end
+
+local function mkEdit(owner, x, y, w, h)
+  local e = createEdit(owner)
+  e.Left = x
+  e.Top = y
+  e.Width = w
+  e.Height = h
+  e.Text = ''
+  setFont(e)
+  return e
+end
+
+local function mkButton(owner, x, y, w, h, cap, fn)
+  local b = createButton(owner)
+  b.Left = x
+  b.Top = y
+  b.Width = w
+  b.Height = h
+  b.Caption = cap
+  b.OnClick = function(sender) pcall(fn) end
+  setFont(b)
+  return b
+end
+
+-- 按"字节"保守估算文字宽度：ASCII 取 0.62 倍字高，UTF-8 多字节按字符计（1.15 倍字高）
+local function estW(s, th)
+  local hi = 0
+  local i
+  for i = 1, #s do
+    if s:byte(i) > 127 then hi = hi + 1 end
+  end
+  local wide = hi / 3
+  local ascii = #s - hi
+  return math.floor(ascii * th * 0.62 + wide * th * 1.15 + 0.5)
+end
+
+local function buildPanel()
+  if panel ~= nil then return end
+  pcall(hideAllCEWindows)
+
+  local f = createForm(false)
+  pcall(function() f.DoNotSaveInTable = true end)
+  f.Caption = 'パンドラメイズ 修改器'
+  setFont(f)
+
+  -- 实测字高：拿一个临时 Edit 读 Font.Height（唯一可靠的度量）
+  local TH = math.floor(FS * 1.4)
+  pcall(function()
+    local probe = createEdit(f)
+    setFont(probe)
+    local v = probe.Font.Height
+    if type(v) == 'number' then TH = math.abs(v) end
+    probe.destroy()
+  end)
+
+  local PAD  = 14
+  local GAP  = 12
+  local W_NAME = math.floor(estW('EroPower', TH) * 1.30) + PAD * 2
+  local W_NUM  = math.floor(estW('9999', TH) * 1.60) + PAD * 2
+  local W_EDIT = W_NUM + PAD * 2
+  local W_BTN  = math.floor(estW('写入', TH) * 1.60) + PAD * 2
+  local LBL_H  = TH + 8
+  local BTN_H  = TH + PAD * 2
+  local ROW_H  = TH + PAD * 2 + 10
+  local HEAD_H = TH + PAD * 2
+  local X_NAME = PAD
+  local X_CUR  = X_NAME + W_NAME + GAP
+  local X_EDIT = X_CUR + W_NUM + GAP
+  local X_BTN  = X_EDIT + W_EDIT + GAP
+  local FW_ROW = X_BTN + W_BTN + PAD
+
+  -- 底部快捷按钮
+  local quick = {
+    { cap = 'SAN 满',   fn = function() setVal('SAN', 100); refresh() end },
+    { cap = 'HP/MP 满', fn = function()
+        setVal('HP', 100)
+        setVal('maxHP', 100)
+        setVal('MP', 100)
+        refresh()
+      end },
+    { cap = '刷新',     fn = refresh },
+    { cap = '关闭',     fn = function() pcall(closeCE) end },
+  }
+  local qw = {}
+  local qsum = 0
+  local i
+  for i = 1, #quick do
+    qw[i] = math.floor(estW(quick[i].cap, TH) * 1.45) + PAD * 2
+    qsum = qsum + qw[i]
+  end
+  qsum = qsum + GAP * (#quick - 1) + PAD * 2
+
+  local FW = math.max(FW_ROW, qsum)
+  local FH = PAD + HEAD_H + #WANT * ROW_H + GAP + BTN_H + PAD + 8
+
+  say(string.format('metrics: textH=%d  name=%d num=%d edit=%d btn=%d  ->  form %dx%d',
+    TH, W_NAME, W_NUM, W_EDIT, W_BTN, FW, FH))
+
+  f.Width = FW
+  f.Height = FH
+
+  local y = PAD
+  mkLabel(f, X_NAME, y, W_NAME, LBL_H, '属性')
+  mkLabel(f, X_CUR,  y, W_NUM,  LBL_H, '当前')
+  mkLabel(f, X_EDIT, y, W_EDIT, LBL_H, '目标值')
+  y = y + HEAD_H
+
+  for i = 1, #WANT do
+    local k = WANT[i].key
+    mkLabel(f, X_NAME, y + math.floor(PAD / 2) + 2, W_NAME, LBL_H, k)
+    local cur = mkLabel(f, X_CUR, y + math.floor(PAD / 2) + 2, W_NUM, LBL_H, '?')
+    local ed = mkEdit(f, X_EDIT, y, W_EDIT, LBL_H + 6)
+    mkButton(f, X_BTN, y, W_BTN, BTN_H, '写入', function() writeField(k) end)
+    ROWS[k] = { cur = cur, edit = ed }
+    y = y + ROW_H
+  end
+
+  y = y + GAP
+  local qx = PAD
+  for i = 1, #quick do
+    mkButton(f, qx, y, qw[i], BTN_H, quick[i].cap, quick[i].fn)
+    qx = qx + qw[i] + GAP
+  end
+
+  f.OnClose = function(sender) pcall(closeCE) end
+
+  pcall(function() f.centerScreen() end)
+  say(string.format('panel built: %dx%d', f.Width, f.Height))
+
+  panel = f
+  f.show()
+  pcall(function() f.bringToFront() end)
+
+  local rt = createTimer(MainForm, false)
+  rt.Interval = 500
+  rt.OnTimer = function(sender) pcall(refresh) end
+  rt.Enabled = true
+  _G.pandora_refresh_timer = rt
+
+  refresh()
+  say('panel created')
+end
+
+-- ------------------------------------------------------------------
+-- 主循环：附加进程 -> 等 Mono -> 解析地址 -> 弹面板
+-- ------------------------------------------------------------------
+
+local function tick(sender)
+  tries = tries + 1
+  local ok, err = pcall(function()
+    if not diagDone then diag() end
+    if (getOpenedProcessID() or 0) == 0 then
+      local pid = getProcessIDFromProcessName(PROCESS_NAME)
+      if pid and pid ~= 0 then openProcess(pid) end
+    end
+    if ensureMono() then
+      if apply() > 0 then
+        sender.Enabled = false
+        buildPanel()
+      end
+    end
+  end)
+  if not ok then say('error: ' .. tostring(err)) end
+  if tries > 119 then
+    sender.Enabled = false
+    say('gave up after ' .. tries .. ' tries')
+  end
+end
+
+local boot = createTimer(MainForm, false)
+boot.Interval = 500
+boot.OnTimer = tick
+boot.Enabled = true
+say('waiting for the mono collector...')
+  </LuaScript>
+</CheatTable>

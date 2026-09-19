@@ -1,0 +1,39 @@
+# 本地配置：含个人路径，绝不提交
+config.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Cheat Engine 运行时产物
+*.CT.bak
+mcp_req.txt
+mcp_res.txt
+*.CETRAINER
+
+# 生成出的修改器与游戏目录内的临时产物
+*Trainer.exe
+*修改器.exe
+cetrainers/
+close_*_trainer.ps1
+启动*修改器.*
+
+# 日志与临时文件
+*.log
+*.tmp
+_dsh_in_*.lua
+_dsh_out_*.txt
+*.orig-backup
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
