@@ -7,7 +7,7 @@
 > **配套 skill**：`skills/ce-stable-address` —— 只放决策表与流程，细节在本文件。
 
 - 环境：Cheat Engine 7.x @ `<CE_DIR>`（路径见 `config.yaml`；经 PowerShell 通道远程驱动，跨会话可用）
-- **配套脚本**：`<CE_DIR>\dsh_stable.lua`（源文件在 `lua/dsh_stable.lua`）—— Mono 静态字段稳定条目的**框架 + 反查工具**
+- **配套脚本**：`<CE_DIR>\dsh_stable.lua`（源文件在 `bootstrap/dsh_stable.lua`）—— Mono 静态字段稳定条目的**框架 + 反查工具**
   （`resolve` / `installAll` / `installWithRetry` / `enableAuto` / `identify` / `identifyReport`）
 - 建立：2026-09-18；**每一条都标注了验证状态**（✅ 实测 / ⚠️ 待验证 / ❌ 实测不可用）
 

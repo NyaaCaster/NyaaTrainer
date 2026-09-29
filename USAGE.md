@@ -4,7 +4,7 @@
 > 读完本文你应该能独立完成「拿到一个游戏 → 找到数值 → 固化成重启后仍有效的条目 → 打包成双击即用的独立修改器」的全流程。
 >
 > **和仓库里其它文档的关系**：本文是**入口与总览**，同时也是**使用手册**。
-> `docs/01`~`docs/04` 是四份**深度方法论**（每条结论都带实测状态），`AGENT.md` 是给 Agent 读的热 rule。
+> `docs/01`~`docs/04` 是四份**深度方法论**（每条结论都带实测状态），`AGENTS.md` 是给 Agent 读的热 rule。
 > 三者**不重复**：本文讲"怎么用、为什么这样设计"，`docs/` 讲"细节的完整推导与全部踩坑"。
 >
 > 本文所有路径一律用占位符（`<CE_DIR>` / `<GAMES_DIR>` / `<REPO>`），
@@ -19,7 +19,7 @@
 | [1. 项目简介](#1-项目简介) | 这是什么、解决什么问题、四条核心主张 | 所有人（先读） |
 | [2. 核心原理](#2-核心原理) | 为什么不要一上来扫内存、地址为什么会浮动、稳定锚点是什么 | 想理解本质的人 |
 | [3. 架构与目录](#3-架构与目录) | 文件清单、三条通道、四份文档的分工 | 要改代码的人 |
-| [4. 安装](#4-安装) | 装依赖、装 CE、引导 CE、配 config.yaml | 首次使用 |
+| [4. 安装](#4-安装) | 跑 bootstrap.ps1 装配 runtime（CE+Python 自动就位） | 首次使用 |
 | [5. 使用说明](#5-使用说明) | 端到端工作流：找值 → 固化 → 打包 → 验证 | 所有人（主体） |
 | [6. 命令速查](#6-命令速查) | 常用命令一页纸 | 日常查阅 |
 | [7. 常见任务配方](#7-常见任务配方) | 按"我要做什么"索引的操作步骤 | 日常查阅 |
@@ -72,7 +72,7 @@ CE 里开着一条命名管道，Agent 通过 PowerShell 往里面灌 Lua 并取
 
 ## 2. 核心原理
 
-> 这一节解释「为什么这么做」。只想上手可直接跳到 [第 4 章](#4-安装)。
+> 这一节解释「为什么这么做」。只想上手可直接跳到 [第 4 章](#4-安装) 的一条装配命令。
 
 ### 2.1 为什么不要一上来就扫内存
 
@@ -180,7 +180,7 @@ trainer exe = standalonephase1.dat          ← 解压 stub（本身是个 PE �
 ```
 NyaaTrainer/
 ├── README.md                  项目门面（人类阅读）
-├── AGENT.md                   Agent 热 rule —— 流程 / 硬规矩 / 索引（Agent 必读）
+├── AGENTS.md                  Agent 热 rule —— 流程 / 硬规矩 / 索引（Agent 必读）
 ├── USAGE.md                   本文 —— 技术文档 + 使用说明
 ├── LICENSE                    MIT
 ├── config.example.yaml        配置样例（复制为 config.yaml 后修改）
@@ -202,9 +202,17 @@ NyaaTrainer/
 │   ├── NyaaTrainer_icon.ico      统一图标（7 尺寸）
 │   └── NyaaTrainer_icon.svg      图标的矢量源文件（不参与打包）
 │
-├── lua/                       CE 侧加载的 Lua 库
+├── bootstrap/                 Agent 引导原料（仓库自研 + 已获准分发的部署件）
+│   ├── main_boot.lua             追加进 main.lua 的三段引导正文
 │   ├── dsh_lib.lua               Lua 往返桥（结果回传）
-│   └── dsh_stable.lua            稳定条目框架（声明/解析/反查/自动重建）
+│   ├── dsh_stable.lua            稳定条目框架（声明/解析/反查/自动重建）
+│   ├── ceMCP.lua(+.sha256)       CE 侧 MCP 文件通道轮询内核（社区扩展部署版）
+│   └── THIRD_PARTY.md            第三方工件来源与许可
+│
+├── runtime/                   运行时装配区（ce/ 与 downloads/ 由 bootstrap 产出，不进仓库）
+│   ├── bootstrap.ps1             ★ 装配器：下载 CE 7.7 → 7z 解压 → 部署引导 → 删安装包 → 自检
+│   ├── ce/                       CE 免安装副本（= <CE_DIR>，gitignore）
+│   └── tools/python/             ★ 内嵌 Python 3.12 embeddable（随仓库分发，无安装）
 │
 ├── skills/                    Agent 技能（放进 Agent 的 skills 目录即可用）
 │   ├── ce-stable-address/SKILL.md
@@ -272,117 +280,95 @@ CE 侧在 `main.lua` 里常驻三条 Agent 调用通道，按场景选：
 
 ### 4.1 环境要求
 
-| 工具 | 版本 | 用途 | 来源 |
+| 依赖 | 版本 | 用途 | 如何就位 |
 |---|---|---|---|
-| **Cheat Engine** | **7.7**（验证版本） | 内存修改引擎 | <https://cheatengine.org/> · [GitHub](https://github.com/cheat-engine/cheat-engine) |
-| **Python** | 3.8+ | 生成器 / MCP 服务端 | <https://www.python.org/downloads/> |
-| **PowerShell** | 5.1+（推荐 7.x） | 通道脚本 | <https://github.com/PowerShell/PowerShell> |
+| **Cheat Engine** | **7.7**（验证版本） | 内存修改引擎 | **bootstrap.ps1 自动获取**（官网包下载 → 7z 免安装解压；下载用后即删） |
+| **Python** | 3.12 embeddable | 生成器 / MCP 服务端 / 作用域自查 | **已内嵌** `runtime\tools\python\`，无需安装 |
+| **PowerShell** | 5.1+（推荐 7.x） | 通道脚本 | Windows x64 自带 |
+| **7-Zip** | 任意近期版 | 解 CE 安装包（Inno Setup） | 系统已有即可；bootstrap 探测，缺失时提示安装 |
 
-> CE 是 **GPL-2.0**，Python 是 PSF，PowerShell 是 MIT。
+> 许可：CE 是 **GPL-2.0**，Python 是 PSF；第三方工件清单见 `bootstrap/THIRD_PARTY.md`。
+> ⚠️ **国内网络提示**：CE 官网与 GitHub 通常需要代理——**安装/clone 前先开翻墙软件**（bootstrap 会先做连通性探测并提示）。
 
-### 4.2 装 Cheat Engine
+### 4.2 装配 CE（bootstrap.ps1 一条命令）
 
-从官网或 GitHub 下载安装即可。**记住安装目录**，下一步要用。
+**不需要手动安装 CE**。`bootstrap.ps1` 全自动：
 
-> 如果你的 CE 目录需要搬家，**不要直接剪切** —— 官方卸载器把绝对路径写进了 `unins000.dat`，
-> 直接移动会导致卸载器失效。用本仓库的管理脚本：
->
-> ```powershell
-> # 先看状态（只读，安全）
-> & '<CE_DIR>\CheatEngine-Manage.ps1' -Action Status
-> # 搬家（会自动同步注册表与快捷方式）
-> & '<CE_DIR>\CheatEngine-Manage.ps1' -Action Migrate -TargetDir 'D:\Target\Cheat Engine'
-> ```
+```powershell
+.\runtime\bootstrap.ps1                    # 联网装配（官网下载）
+.\runtime\bootstrap.ps1 -CePackage D:\dl\CheatEngine77.exe   # 离线装配（用本地安装包）
+.\runtime\bootstrap.ps1 -TestChannels      # 装配后拉一次 CE 实试通道 1（收尾自动关闭 CE）
+```
 
-### 4.3 配置 config.yaml
+动作：下载 `CheatEngine77.exe` → 7z 解压到 `runtime\ce\Cheat Engine\`（= `<CE_DIR>`）→ 备份原 `main.lua` 为 `main.lua.orig-backup` → 追加三段引导 → 复制 `dsh_lib.lua` / `dsh_stable.lua` 到 `<CE_DIR>\`、`ceMCP.lua`（SHA256 校验）到 `<CE_DIR>\extras\` → **删除安装包** → 17 项关键文件自检。
+
+重复运行是**幂等**的：引导段以标记对为界做替换重部署；CE 已在位时用 `-SkipCeDeploy` 只重署引导。
+CE 目录搬家依然**不要直接剪切**（`unins000.dat` 记录绝对路径）——但独立工作区的 runtime 目录整体拷贝/搬家不受此限（legacy 管理脚本 `CheatEngine-Manage.ps1` 保留用于排查与卸载）。
+
+### 4.3 配置 config.yaml（可选）
 
 ```bash
 cp config.example.yaml config.yaml
 ```
 
-然后编辑 `config.yaml`，**至少填这两个**：
+独立工作区后**没有必填路径**——CE 由脚本自动定位到 `runtime\ce\`，Python 用内嵌的。`config.yaml` 已在 `.gitignore` 中，不会被提交。
 
-```yaml
-paths:
-  cheat_engine: "C:\\Program Files\\Cheat Engine 7.7"   # 你的 CE 安装目录
-  games_root:   "D:\\Games"                             # 你的游戏根目录
-```
-
-`config.yaml` 已在 `.gitignore` 中，**不会被提交** —— 你的本地路径不会进仓库。
-
-**完整配置项说明**：
+**可选配置项说明**：
 
 | 键 | 含义 |
 |---|---|
-| `paths.cheat_engine` | CE 安装目录（下文记作 `<CE_DIR>`） |
-| `paths.games_root` | 游戏根目录（下文记作 `<GAMES_DIR>`） |
-| `paths.repo_root` | 本仓库位置（脚本用它定位 `docs/`、`lua/`、`src/`） |
+| `paths.repo_root` | 本仓库位置（通常保持 "."） |
 | `paths.temp_dir` | 临时产物目录（留空用系统临时目录） |
-| `cheat_engine.version` | CE 版本（影响部分 API 行为；7.7 为当前验证版本） |
-| `cheat_engine.bootstrap` | CE 侧引导方式：`main_lua`（推荐）/ `autorun`（**CE 7.x 不执行**） |
+| `cheat_engine.version` | CE 版本（7.7 为当前验证版本） |
+| `cheat_engine.bootstrap` | 引导方式固定 `main_lua`（**CE 7.x 不执行 `autorun\`**，无第二种可行项） |
 | `cheat_engine.pipe_name` | LuaServer 管道名（默认 `CELUASERVER`） |
 | `cheat_engine.mcp_poll_ms` | mcp 文件通道轮询间隔（毫秒） |
 | `cheat_engine.mcp_timeout_s` | MCP 请求超时（秒） |
 | `agent.mcp_command` / `mcp_args` / `mcp_env` | 各 Agent 客户端登记 MCP 服务端的命令 |
-| `games[]` | 各游戏项目登记（`code` / `dir` / `process` / `table`） |
+| `games[]` | 各游戏项目登记（`code` / `dir`（**可选**）/ `process` / `table`） |
 | `options.trainer_pack_mono` | 生成 trainer 时是否打包 Mono 支持（Unity Mono 必需） |
 | `options.trainer_pack_symbols` | 是否打包 win64 符号库（**缺了 Mono 注入会失败**） |
 | `options.panel_font_size` | 面板字号（200% 缩放下建议 12-16） |
 
-**环境变量优先级高于配置文件**（便于临时覆盖）：
+**环境变量优先级高于一切默认值**（便于临时覆盖）：
 
 | 环境变量 | 覆盖 |
 |---|---|
-| `NYAA_TRAINER_CE_DIR` | `paths.cheat_engine` |
-| `NYAA_TRAINER_GAMES_DIR` | `paths.games_root` |
-| `CE_DIR` | 仅 `ce_mcp_server.py` 使用 |
+| `CE_DIR` | 仅 `ce_mcp_server.py`（以及 agent 提示词层面的 NYAA_TRAINER_CE_DIR 习惯用法） |
 
-### 4.4 引导 CE（关键步骤）
+### 4.4 引导部署（bootstrap 已自动化；此节仅供手工排查）
 
-CE 需要**在启动时**加载引导代码，才能被 Agent 驱动。
+`bootstrap.ps1` 已自动完成以下三件事，手工排查时对照：
 
-**① 把 Lua 库复制到 CE 目录**：
+**① Lua 库在 `<CE_DIR>\` 下**（CE 从自己的目录 `dofile`）：
 
 ```powershell
-Copy-Item '<REPO>\lua\dsh_lib.lua'   '<CE_DIR>\' -Force
-Copy-Item '<REPO>\lua\dsh_stable.lua' '<CE_DIR>\' -Force
+Test-Path '<REPO>\runtime\ce\Cheat Engine\dsh_lib.lua'      # 应为 True
+Test-Path '<REPO>\runtime\ce\Cheat Engine\extras\ceMCP.lua' # 应为 True
 ```
 
-> 必须放在 `<CE_DIR>\` 下，因为 **CE 从自己的目录 `dofile`**。
+**② `<CE_DIR>\main.lua` 末尾有引导段**（`--==== NyaaTrainer bootstrap` … `--==== end NyaaTrainer bootstrap ====` 标记对之间；`openLuaServer('CELUASERVER')` + `dofile dsh_lib.lua` + 定时器挂载 ceMCP.lua）。
 
-**② 在 `<CE_DIR>\main.lua` 末尾追加引导**：
-
-```lua
-pcall(function() openLuaServer('<pipe_name>') end)                       -- 开命名管道
-pcall(function() dofile(getCheatEngineDir() .. 'dsh_lib.lua') end)       -- 加载往返桥
-```
-
-`<pipe_name>` 与 `config.yaml` 的 `cheat_engine.pipe_name` 保持一致（默认 `CELUASERVER`）。
-
-**③ 改前先备份**：
-
-```powershell
-Copy-Item '<CE_DIR>\main.lua' '<CE_DIR>\main.lua.orig-backup' -Force
-```
+**③ 改前备份存在**：`<CE_DIR>\main.lua.orig-backup`（bootstrap 首次部署时创建）。
 
 > ⚠️ **CE 7.x 不执行 `autorun\` 目录下的脚本**（实测落盘探针连试 3 次均未执行），
 > 所以引导**必须挂 `main.lua`**，不能放进 `autorun\`。
 
-**④ 重启 CE**，然后验证通道：
+**验证通道**：
 
 ```powershell
-& '<REPO>\src\ce-lua.ps1' -CeDir '<CE_DIR>' -Code "return 6*7"
-# 期望输出：RETURN: 42
+& '<REPO>\src\ce-lua.ps1' -Code "return 6*7"
+# 期望输出：RETURN: 42（无 -CeDir 参数即按 <CE_DIR>=runtime\ce\Cheat Engine 定位）
 ```
 
 看到 `RETURN: 42` 就说明通道打通了。
 
 ### 4.5 让其它 Agent 工具接入（可选）
 
-本仓库提供标准 MCP 服务端 `src/ce_mcp_server.py`，三者通用参数：
+本仓库提供标准 MCP 服务端 `src/ce_mcp_server.py`（用内嵌 Python 跑），三者通用参数：
 
 ```
-command : python（python 绝对路径）
+command : <REPO>\runtime\tools\python\python.exe
 args    : ["<REPO>\src\ce_mcp_server.py"]
 env     : CE_DIR = <CE_DIR>          （可选 CE_MCP_TIMEOUT = 15）
 ```
@@ -1441,7 +1427,7 @@ $b = [IO.File]::ReadAllBytes($path); ($b[0..2] | % { $_.ToString('X2') }) -join 
 
 ## 9. 硬规矩
 
-> 这些是**实测踩过坑**换来的约定。Agent 作业时同样适用（详见 `AGENT.md` §5）。
+> 这些是**实测踩过坑**换来的约定。Agent 作业时同样适用（详见 `AGENTS.md` §5）。
 
 1. **改动前先备份** —— `<CE_DIR>\main.lua` 等有 `.orig-backup` 的，改前确认备份在。
 2. **不硬编码路径** —— 一切路径从 `config.yaml` 拼接；仓库内文件用相对路径。
@@ -1611,7 +1597,7 @@ _SIGNATURE = b"Nyaa be with you."
 | 把找到的地址固定成重启后仍有效的条目 | `docs/02-stable-address.md` |
 | 把条目打包成双击即用的独立修改器 | `docs/03-standalone-trainer.md` |
 | CE 通道怎么用、怎么配 | `docs/04-ce-bridge.md` |
-| 让 Agent 按标准流程作业 | `AGENT.md` |
+| 让 Agent 按标准流程作业 | `AGENTS.md` |
 | 照着现成的样板改 | `examples/`（先看 `examples/nurtale/README.md`） |
 
 ---

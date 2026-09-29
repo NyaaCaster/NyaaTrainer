@@ -502,12 +502,22 @@ MONO_FILES = [
 ]
 
 
+def _default_ce_dir():
+    # 独立工作区默认：<repo>\runtime\ce\Cheat Engine（bootstrap.ps1 装配处）
+    here = os.path.dirname(os.path.abspath(__file__))
+    runtime_default = os.path.join(os.path.dirname(here), "runtime", "ce", "Cheat Engine")
+    if os.path.isdir(runtime_default):
+        return runtime_default
+    # legacy：脚本与 CE 同目录部署
+    return here
+
+
 def main():
     ap = argparse.ArgumentParser(description="合成 CE 独立修改器 exe")
     ap.add_argument("--table", required=True, help="表格文件（.CETRAINER 或 .CT）")
     ap.add_argument("--table-name", default="CET_TRAINER.CETRAINER", help="归档内的表文件名")
     ap.add_argument("--out", required=True, help="输出的 exe")
-    ap.add_argument("--ce-dir", default=os.path.dirname(os.path.abspath(__file__)))
+    ap.add_argument("--ce-dir", default=_default_ce_dir())
     ap.add_argument("--no-mono", action="store_true", help="不打包 Mono 支持")
     ap.add_argument("--no-decompressor", action="store_true", help="不写 DECOMPRESSOR 资源")
     ap.add_argument("--tiny", action="store_true", help="微型模式（依赖已安装的 CE）")

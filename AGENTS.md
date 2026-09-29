@@ -1,4 +1,4 @@
-# AGENT.md — Agent 作业规程（热 rule）
+# AGENTS.md — Agent 作业规程（热 rule）
 
 > **本文件是 Agent 的入口**。人类阅读请看 [`README.md`](README.md)。
 >
@@ -7,32 +7,24 @@
 
 ---
 
-## 0. 前置：读配置
+## 0. 前置：确认运行时就绪（不依赖用户预装 CE）
 
-**开工第一件事**：读 `config.yaml`（由 `config.example.yaml` 复制而来）。
+**开工第一件事**：确认本仓库 runtime 已装配：
 
-```bash
-# 若不存在，先创建
-cp config.example.yaml config.yaml
+```powershell
+Test-Path "<仓库根>\runtime\ce\Cheat Engine\cheatengine-x86_64.exe"
 ```
 
-`config.yaml` 里的关键路径：
+- **True（已装配）** → 直接进入 §1 开工。
+- **False（clone 后首次）** → 引导用户运行 `runtime\bootstrap.ps1`（唯一装配入口）：
+  1. **提前告知用户：CE 官网站点在国内网络通常需要代理，请先开翻墙软件**（bootstrap 会先做连通性探测，失败 3 次会停在同一条提示上）；
+  2. 无网络可用 `-CePackage <本地安装包路径>` 离线装配；
+  3. bootstrap 动作：下载 CE 7.7 → **7z 免安装解压**到 `runtime\ce\`（免装、免注册表、免驱动）→ 部署引导 → **用后即删安装包** → 文件级自检（`-TestChannels` 还可拉 CE 实试通道 1）。
+- **不要**把用户自装的 CE 接进来（版本/组件不可控，无法保证满足项目需求）；本仓库只认 `runtime\ce\Cheat Engine` 这一部署。
+- **内嵌 Python**：`<repo>\runtime\tools\python\python.exe` 已随仓库分发（3.12 embeddable，纯标准库，无 pip 需求），三个 Python 脚本优先用它跑；机器上的系统 Python 是备用。
+- `config.yaml`（由 `config.example.yaml` 复制）**不再**登记 CE / games_root 路径；`games[].dir` 降为可选——会话现场确定后可填可不填。
 
-| 键 | 含义 |
-|---|---|
-| `paths.cheat_engine` | CE 安装目录（`<CE_DIR>`） |
-| `paths.games_root` | 游戏根目录 |
-| `paths.temp_dir` | 临时产物目录（留空用系统临时目录） |
-| `cheat_engine.pipe_name` | LuaServer 管道名（默认 `CELUASERVER`） |
-| `games[]` | 各游戏项目登记（code / dir / process / table） |
-
-**若 `config.yaml` 缺失或路径为空**：
-
-1. 读 `config.example.yaml` 的 `tools` 段拿工具来源地址
-2. 检查工具是否已安装；没装就提示用户安装
-3. **把探测到的实际路径写回 `config.yaml`**，然后继续
-
-**下文所有 `$CE_DIR` / `$GAMES_DIR` 都指这两个配置值，不要硬编码。**
+**下文所有 `$CE_DIR` 统指 `<repo>\runtime\ce\Cheat Engine`（bootstrap 装配处），不要硬编码其它绝对路径。**
 
 ---
 
@@ -73,18 +65,22 @@ cp config.example.yaml config.yaml
 | `src/NyaaTrainer_icon.ico` | ★ **统一图标**（7 尺寸）——`make_trainer.py` 默认用它写 exe 图标，并打进归档供窗口图标用 |
 | `src/NyaaTrainer_icon.svg` | 图标的**矢量源文件**（改尺寸/换色时从它重新导出 ico，不直接参与打包） |
 | `src/check_lua_scope.py` | **Lua 作用域自查**：查「使用早于 local 声明」（这类 bug 不报错，极难排查） |
-| `src/CheatEngine-Manage.ps1` | CE 安装管理：Status / Sync / Migrate / Uninstall |
-| `lua/dsh_lib.lua` | CE 侧 Lua 往返桥（`dsh_out` / `dsh_eval` / `dsh_run_file`） |
-| `lua/dsh_stable.lua` | Mono **静态字段**稳定条目框架（`resolve` / `installAll` / `identify`） |
+| `src/CheatEngine-Manage.ps1` | CE 安装管理：Status / Sync / Migrate / Uninstall（**legacy 工具**——独立工作区后 runtime 目录即装即用，本脚本保留用于排查与卸载） |
+| `bootstrap/ceMCP.lua` | CE 侧 MCP 文件通道轮询内核（社区扩展部署版，含 2 处补丁；`bootstrap.ps1` 负责复制到 `<CE_DIR>\extras\`） |
+| `bootstrap/dsh_lib.lua` | CE 侧 Lua 往返桥（`dsh_out` / `dsh_eval` / `dsh_run_file`） |
+| `bootstrap/dsh_stable.lua` | Mono **静态字段**稳定条目框架（`resolve` / `installAll` / `identify`） |
+| `bootstrap/main_boot.lua` | 追加进 `<CE_DIR>\main.lua` 的三段引导正文（bootstrap.ps1 幂等部署） |
+| `runtime/bootstrap.ps1` | ★ **装配器**：下载 CE 7.7 → 7z 解压 → 部署引导 → 删安装包 → 自检 |
+| `runtime/tools/python/` | ★ 内嵌 Python 3.12 embeddable（三个 Python 脚本的运行时，无安装无 pip） |
 
-**CE 侧需要加载的引导**（追加到 `$CE_DIR\main.lua` 末尾，详见 `docs/04-ce-bridge.md`）：
+**CE 侧需要加载的引导**（bootstrap.ps1 自动部署到 `<CE_DIR>\main.lua` 末尾，详见 `docs/04-ce-bridge.md`）：
 
 ```lua
 pcall(function() openLuaServer('<pipe_name>') end)
 pcall(function() dofile(getCheatEngineDir() .. 'dsh_lib.lua') end)
 ```
 
-> `lua/dsh_lib.lua` 需复制到 `$CE_DIR\` 下（CE 从自己的目录加载）。
+> `bootstrap/dsh_lib.lua` 需复制到 `$CE_DIR\` 下（CE 从自己的目录加载）——bootstrap.ps1 已自动化，手工部署时才需要照做。
 
 ---
 
@@ -256,15 +252,17 @@ _SIGNATURE = b"Nyaa be with you."
 
 ---
 
-## 9. 外部工具来源
+## 9. 外部依赖来源（bootstrap 自动获取；此表供排查与提示词参考）
 
-Agent 需要时按下表提示用户安装，并把路径写回 `config.yaml`：
+| 依赖 | 用途 | 来源 | 协议 | 获取方式 |
+|---|---|---|---|---|
+| **Cheat Engine 7.7** | 内存修改引擎 | <https://cheatengine.org/> · <https://github.com/cheat-engine/cheat-engine> | GPL-2.0 | **bootstrap.ps1 自动**：官网包下载 → 7z 免安装解压到 `runtime\ce\` → 安装包用后即删。**⚠ 国内网络通常需翻墙（已写进 §0 agent 提示）** |
+| **Python 3.12 embeddable** | 生成器 / MCP 服务端 / 作用域自查 | <https://www.python.org/downloads/windows/> | PSF-2.0 | **已内嵌** `runtime\tools\python\`（纯标准库用法，无 pip 需求） |
+| **PowerShell 5.1+** | 通道脚本 | 系统自带 | — | Windows x64 自带，无需处理 |
+| **7-Zip** | 解 CE 安装包（Inno Setup） | <https://www.7-zip.org/> | LGPL-2.1 | bootstrap 探测系统已有 7z；无则明确提示用户安装（站点访问不畅需翻墙）。本体不自动安装 |
+| **ceMCP.lua（社区扩展部署版）** | 文件通道轮询内核 | CE 论坛 topic 623995（部署版在维护者服务器分发） | 见文件头 | 已随仓库入库 `bootstrap\ceMCP.lua`（SHA256 校验），无需联网 |
 
-| 工具 | 用途 | 来源 | 协议 |
-|---|---|---|---|
-| **Cheat Engine 7.7** | 内存修改引擎 | <https://cheatengine.org/> · <https://github.com/cheat-engine/cheat-engine> | GPL-2.0 |
-| **Python 3.8+** | 生成器 / MCP 服务端 | <https://www.python.org/downloads/> | PSF |
-| **PowerShell 5.1+** | 通道脚本 | <https://github.com/PowerShell/PowerShell> | MIT |
+> 翻墙提示原则（用户拍板）：bootstrap 对每个外网下载做前置连通性探测（HEAD 3 次 × 5s），失败统一提示「该站点在国内网络环境下可能需要翻墙，请开启后重新运行」。GitHub clone 本仓库本身同理，由上层 agent 负责提示。
 
 ---
 

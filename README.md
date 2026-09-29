@@ -30,52 +30,28 @@
 
 ## 快速开始
 
-### 1. 装依赖
+### 1. 装配 runtime（唯一安装步骤；不要求预装任何外部软件）
 
-| 工具 | 用途 | 来源 |
-|---|---|---|
-| **Cheat Engine 7.7** | 内存修改引擎 | <https://cheatengine.org/> · [GitHub](https://github.com/cheat-engine/cheat-engine) |
-| **Python 3.8+** | 生成器 / MCP 服务端 | <https://www.python.org/downloads/> |
-| **PowerShell 5.1+**（推荐 7.x） | 通道脚本 | <https://github.com/PowerShell/PowerShell> |
+```powershell
+.\runtime\bootstrap.ps1
+```
 
-> Agent 提示：安装完成后，**把实际安装路径写回 `config.yaml` 的 `paths.cheat_engine`**
-> （`config.yaml` 由 `config.example.yaml` 复制而来，见下一步）。
+它自动完成：下载 **Cheat Engine 7.7** 安装包 → **7z 免安装解压**（免装、免注册表、免驱动）到 `runtime\ce\` → 部署 Agent 引导（main.lua + Lua 库 + ceMCP 轮询内核）→ **删除安装包** → 文件级自检。Python 3.12（embeddable）已内嵌于 `runtime\tools\python\`，无需安装。
 
-### 2. 配置
+> ⚠️ **国内网络提示**：CE 官网站点通常需要代理，**请先开启翻墙软件再运行 bootstrap**（脚本会对下载源做连通性探测，失败会停下并给出同样提示）。完全无法联网时可用本地安装包离线装配：`.\runtime\bootstrap.ps1 -CePackage <安装包路径>`。
+> 系统需已有 7-Zip（bootstrap 会探测；没有则提示安装）。
+
+### 2. （可选）config.yaml
 
 ```bash
 cp config.example.yaml config.yaml
 ```
 
-然后编辑 `config.yaml`，**至少填这两个**：
+`config.yaml` 已在 `.gitignore` 中，不会被提交。独立工作区后**不再有必填路径**（CE 路径由脚本自动定位到 `runtime\ce\`）；`games[]` 登记改为可选，由使用现场决定。
 
-```yaml
-paths:
-  cheat_engine: "C:\\Program Files\\Cheat Engine 7.7"   # 你的 CE 安装目录
-  games_root:   "D:\\Games"                             # 你的游戏根目录
-```
+### 3. 交给 Agent
 
-`config.yaml` 已在 `.gitignore` 中，**不会被提交** —— 你的本地路径不会进仓库。
-
-`config.example.yaml` 里还登记了各外部工具的来源地址（`tools` 段），
-Agent 可据此提示用户补全路径。
-
-### 3. 让 CE 具备可被 Agent 驱动的能力
-
-详见 **[`docs/04-ce-bridge.md`](docs/04-ce-bridge.md)**。简述：
-
-在 `<CE_DIR>\main.lua` 末尾追加引导（文件见 `lua/`）：
-
-```lua
-pcall(function() openLuaServer('CELUASERVER') end)          -- 开命名管道
-pcall(function() dofile(getCheatEngineDir() .. 'dsh_lib.lua') end)
-```
-
-之后 Agent 就能通过 `src/ce-lua.ps1` 在 CE 里执行任意 Lua 并取回结果。
-
-### 4. 交给 Agent
-
-用 Agent 打开本仓库，让它读 **[`AGENT.md`](AGENT.md)**（热 rule），即可按标准流程作业。
+用 Agent 打开本仓库，让它读 **[`AGENTS.md`](AGENTS.md)**（热 rule），即可按标准流程作业。
 
 ---
 
@@ -84,27 +60,37 @@ pcall(function() dofile(getCheatEngineDir() .. 'dsh_lib.lua') end)
 ```
 NyaaTrainer/
 ├── README.md                  本文件 —— 项目门面（人类阅读）
-├── AGENT.md                   Agent 热 rule —— 流程 / 硬规矩 / 索引（Agent 必读）
-├── LICENSE                    MIT
-├── config.example.yaml        配置样例（复制为 config.yaml 后修改）
+├── AGENTS.md                  Agent 热 rule —— 流程 / 硬规矩 / 索引（Agent 必读）
+├── LICENSE                    MIT（第三方工件来源与许可见 bootstrap/THIRD_PARTY.md）
+├── config.example.yaml        配置样例（复制为 config.yaml 后按需修改；无必填路径）
 ├── .gitignore
 │
 ├── docs/                      方法论文档（Agent 与人类的共同知识源）
 │   ├── 01-mono-recon.md           Unity Mono 数据结构侦察（定位数值的起点）
 │   ├── 02-stable-address.md       把浮动地址固化成重启后仍有效的条目
 │   ├── 03-standalone-trainer.md   打包成独立修改器 exe（含小面板 UI）
-│   └── 04-ce-bridge.md            CE 与本仓库的通道（前置工作链）
+│   ├── 04-ce-bridge.md            CE 与本仓库的通道（前置工作链）
+│   └── PLAN-standalone-workspace.md  独立工作区改造计划（SSOT，归档用）
+│
+├── bootstrap/                 Agent 引导原料（仓库自研 + 已获准分发的部署件）
+│   ├── main_boot.lua             追加进 main.lua 的三段引导正文
+│   ├── dsh_lib.lua               Lua 往返桥（结果回传）
+│   ├── dsh_stable.lua            稳定条目框架（声明/解析/反查/自动重建）
+│   ├── ceMCP.lua(+.sha256)       CE 侧 MCP 文件通道轮询内核（社区扩展部署版）
+│   └── THIRD_PARTY.md            第三方工件来源与许可
+│
+├── runtime/                   运行时装配区（bootstrap.ps1 管；ce/ 与 downloads/ 不进仓库）
+│   ├── bootstrap.ps1             ★ 装配器：下载 CE 7.7 → 7z 解压 → 部署引导 → 删安装包 → 自检
+│   ├── ce/                       CE 免安装副本（bootstrap 产出，gitignore）
+│   └── tools/python/             ★ 内嵌 Python 3.12 embeddable（随仓库分发）
 │
 ├── src/                       可执行代码
 │   ├── ce_mcp_server.py          标准 MCP 服务端（Agent 首选接入方式）
 │   ├── make_trainer.py           独立修改器生成器（与游戏无关，通用）
 │   ├── ce-lua.ps1                任意 Lua 通道客户端
 │   ├── ce-mcp.ps1                8 个成品工具的命令行客户端
-│   └── CheatEngine-Manage.ps1    CE 安装管理（Status/Sync/Migrate/Uninstall）
-│
-├── lua/                       CE 侧加载的 Lua 库
-│   ├── dsh_lib.lua               Lua 往返桥（结果回传）
-│   └── dsh_stable.lua            稳定条目框架（声明/解析/反查/自动重建）
+│   ├── check_lua_scope.py        Lua 作用域自查（查"使用早于 local 声明"）
+│   └── CheatEngine-Manage.ps1    CE 安装管理（legacy，排查/卸载用）
 │
 ├── skills/                    Agent 技能（放进 Agent 的 skills 目录即可用）
 │   ├── ce-stable-address/SKILL.md
@@ -112,8 +98,10 @@ NyaaTrainer/
 │
 └── examples/                  各游戏的样板（表 + 稳定地址脚本）
     ├── pandora/stable.CT         静态字段型
-    └── iyohaku/stable.CT         实例字段型
-        iyohaku/stable.lua
+    ├── iyohaku/stable.CT         实例字段型
+    │   iyohaku/stable.lua
+    └── nurtale/stable.CT         实例无单例 + 调托管方法型
+        nurtale/stable.lua
 ```
 
 ---
@@ -128,7 +116,7 @@ NyaaTrainer/
    +------------------ 全程靠 docs/04-ce-bridge.md 提供通道 -------------------+
 ```
 
-每步的验收判据写在 `AGENT.md` 里，**不可跳步**（尤其是"重启后仍有效"和"干净环境能跑"）。
+每步的验收判据写在 `AGENTS.md` 里，**不可跳步**（尤其是"重启后仍有效"和"干净环境能跑"）。
 
 ---
 

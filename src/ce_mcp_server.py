@@ -8,7 +8,7 @@ CE MCP Server —— 让 MCP 客户端（Claude Code / Codex / OpenCode / 任意
          <CE_DIR>\\mcp_req.txt   请求（首行工具名，其后 8 行 key=value）
          <CE_DIR>\\mcp_res.txt   响应（JSON 文本）
        CE 侧每 20ms 轮询一次请求文件，所以往返通常是毫秒级。
-路径 : CE_DIR 解析顺序 = 环境变量 CE_DIR > 本脚本所在目录的父目录（即 <CE>\\mcp\\ 的上级）。
+路径 : CE_DIR 解析顺序 = 环境变量 CE_DIR > <repo>\\runtime\\ce\\Cheat Engine（bootstrap.ps1 装配处）> 本脚本所在目录的父目录（legacy：即 <CE>\\mcp\\ 的上级）。
 超时 : 环境变量 CE_MCP_TIMEOUT（秒），默认 10。
 
 本文件基于 CE 论坛扩展「Cheat Engine Simple MCP Server v1.1」(topic 623995) 的协议改写；
@@ -33,8 +33,13 @@ def _resolve_ce_dir():
     env = os.environ.get("CE_DIR")
     if env and os.path.isdir(env):
         return os.path.abspath(env)
-    # <CE>\mcp\ce_mcp_server.py -> <CE>
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # 独立工作区默认：<repo>\runtime\ce\Cheat Engine（bootstrap.ps1 装配处）
+    here = os.path.dirname(os.path.abspath(__file__))
+    runtime_default = os.path.join(os.path.dirname(here), "runtime", "ce", "Cheat Engine")
+    if os.path.isdir(runtime_default):
+        return runtime_default
+    # legacy 部署（脚本在 CE 目录内/其 mcp 子目录）：<CE>\mcp\ce_mcp_server.py -> <CE>
+    return os.path.dirname(here)
 
 
 CE_DIR = _resolve_ce_dir()

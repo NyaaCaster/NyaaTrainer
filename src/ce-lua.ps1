@@ -45,7 +45,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if (-not $CeDir) { $CeDir = Split-Path -Parent $PSCommandPath }
+if (-not $CeDir) {
+    # 独立工作区默认：<repo>\runtime\ce\Cheat Engine（bootstrap.ps1 装配处）；旧版部署可显式传 -CeDir
+    $CeDir = Join-Path (Split-Path -Parent (Split-Path -Parent $PSCommandPath)) 'runtime\ce\Cheat Engine'
+}
 $CeDir = ([IO.Path]::GetFullPath($CeDir)).TrimEnd('\')
 
 # ---------- 取代码 ----------

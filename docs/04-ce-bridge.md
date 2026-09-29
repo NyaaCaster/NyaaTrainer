@@ -126,7 +126,6 @@ Get-Process | Where-Object { $_.Path -like '<CE_DIR>\*' } | Select-Object Id,Nam
 | `…\extras\ceMCP.lua.orig` | 扩展原始副本（对照/回退） |
 | `…\extras\ceMCP_config.lua` | 作者原配置（内嵌 Python，本机**不使用**） |
 | `…\DSH-CE-Bridge.md` | **社区发布版**文档（去本机路径，内嵌 MCP 服务端代码） |
-| `…\dsh_bridge.lua.disabled` | 失败方案留档（TCP REPL：CE 7.7 的 `acceptConnection` 不可用） |
 | `…\CheatEngine-Manage.ps1` | CE 安装管理：`Status` / `Sync` / `Migrate` / `Uninstall` |
 | `…\languages\ch_cn\` | 简体中文语言包（2017 年版，7.7 缺约 823 条） |
 | `…\ceserver\` | CEServer 7.7 跨平台服务端（Android/Linux 目标用） |
@@ -189,7 +188,6 @@ env     : CE_DIR = <CE_DIR>    （可选 CE_MCP_TIMEOUT = 15）
 | `CE 的 LuaServer 管道 'CELUASERVER' 不存在` | 启动 CE（或 `ce-lua.ps1 -StartCe`）；确认 `main.lua` 里 `openLuaServer` 那行没被注释 |
 | 工具返回 `CE is not attached to any process.` | 先在 CE 里附加进程，或通道 1 执行 `openProcess(getProcessIDFromProcessName('x.exe'))` |
 | 通道 2/3 响应超时 | 通道 1 执行 `return type(CEMCP_start)=='function'` 检查；必要时 `CEMCP_stop() CEMCP_start()`；核对 `CE_DIR` |
-| CE 启动后 CPU 偏高 | 确认没有遗留的 socket 轮询脚本（`dsh_bridge.lua` 应为 `.disabled`） |
 | 改了 `main.lua` 后 CE 异常 | 用 `main.lua.orig-backup` 还原 |
 
 ## 7. 安全与开关

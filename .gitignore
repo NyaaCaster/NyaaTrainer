@@ -37,3 +37,7 @@ _dsh_out_*.txt
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# runtime 装配区（bootstrap.ps1 产出：CE 免安装副本 + 下载缓存；内嵌 python 不忽略）
+runtime/ce/
+runtime/downloads/
