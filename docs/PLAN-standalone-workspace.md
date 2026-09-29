@@ -207,6 +207,7 @@ runtime/downloads/
 - 2026-09-30 修订：
   1. 「是否已装 CE」分支整体**删除**（用户修订 1），一律走下载解压。
   2. ceMCP.lua 来源改为**用户提供的服务器 URL**（用户修订 2），论坛直链方案取消。补丁版绝对路径已确认：`G:\game\Cheat Engine\extras\ceMCP.lua`。
+- 2026-09-30 中文语言包顺手修正（用户要求）：ch_cn/cheatengine-x86_64.po 中 3 组 `msgid "Cheat Engine 6.7"` 的 **msgstr 译文改为 "Cheat Engine 7.7"**（msgid 保留不动——它必须与 7.7 源码遗留字面量精确匹配才能命中；VersionCheck.po 为 %s 占位符无需改）。修正前备份 `.orig-backup`；纯净包与 G:\game\Cheat Engine 原部署双份同步。引擎自报 getCEVersion()=7.7 复验不变，语言包加载无报错。
 - 2026-09-30 版本显示澄清（用户不再深究）：纯净包 CE 引擎自报 getCEVersion()=7.7（PE 资源 7.7.0.10621 一致），三通道/mono/make_trainer 全部正常；"6.7" 系 2017 年中文语言包 ch_cn/cheatengine-x86_64.po 的陈旧 UI 字符串（mainunit2.cename 段，6 处），纯显示不影响 agent 调用，纯净包与源逐字节一致未做改动。
 - 2026-09-30 事故与再拍板：
   1. **事故**：CE 官网 downloads 页的 Windows 直链实为 ReasonLabs/Razer 多产品捆绑投放器（静默执行装出 RAV Endpoint Protection + Razer Axon + 真 CE 7.7 三件），已全部清理干净（服务/进程/目录/卸载表/计划任务全绿）。教训写死进 bootstrap.ps1：**未经内容验证的 URL 一律不入库、一律不执行；永不执行安装器，只解压已校验 zip**。
