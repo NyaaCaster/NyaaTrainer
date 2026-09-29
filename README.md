@@ -1,12 +1,26 @@
 # NyaaTrainer
 
-> 私人风灵月影宗 —— 使用 Agent 结合 Cheat Engine 和自创脚本进行游戏修改的记录仓库。
+> 喵灵月影宗——使用Agent结合CE和自创脚本进行游戏修改的私人工具集。
 
 把"在游戏里找到一个数值"到"交付一个双击即用的独立修改器"的整条链路，沉淀成
 **可被 Agent 直接复用的文档 + 脚本 + 样板**。
 
 - 协议：[MIT](LICENSE)
 - 维护者：[@NyaaCaster](https://github.com/NyaaCaster)
+
+---
+
+## 启用
+
+把下面这句提示词发给任何 Agent 工具（Claude Code / Codex / OpenCode / ZCode / DSH…），即可完成部署：
+
+```text
+从 https://github.com/NyaaCaster/NyaaTrainer.git 安装 NyaaTrainer 项目
+```
+
+Agent 会：询问你项目 clone 到哪个目录 → `git clone` → 运行 `runtime\bootstrap.ps1` 下载 **Cheat Engine 7.7 纯净便携包**并装配 → 三条 CE 通道与修改器生成器即刻可用。
+
+> 装配只落在仓库 `runtime\` 内：**不写注册表、不执行任何安装器、不碰你已装的任何软件**；要求本机已有 7-Zip（解 7z 包用）。国内网络请先开翻墙（bootstrap 对下载源做连通性探测，失败会停下提示）。
 
 ---
 
@@ -36,7 +50,7 @@
 .\runtime\bootstrap.ps1
 ```
 
-它自动完成：下载 **Cheat Engine 7.7** 安装包 → **7z 免安装解压**（免装、免注册表、免驱动）到 `runtime\ce\` → 部署 Agent 引导（main.lua + Lua 库 + ceMCP 轮询内核）→ **删除安装包** → 文件级自检。Python 3.12（embeddable）已内嵌于 `runtime\tools\python\`，无需安装。
+它自动完成：从维护者服务器下载 **CE 7.7 纯净便携 7z 包** → SHA256 白名单校验 → **7z 免安装解压**（免装、免注册表、免驱动、**全程不执行任何安装器**）到 `runtime\ce\`（纯净包已内嵌 Agent 引导，开箱即用）→ 幂等校验引导三件 → **删除下载物** → 文件级自检。Python 3.12（embeddable）已内嵌于 `runtime\tools\python\`，无需安装。
 
 > ⚠️ **国内网络提示**：CE 官网站点通常需要代理，**请先开启翻墙软件再运行 bootstrap**（脚本会对下载源做连通性探测，失败会停下并给出同样提示）。完全无法联网时可用本地安装包离线装配：`.\runtime\bootstrap.ps1 -CePackage <安装包路径>`。
 > 系统需已有 7-Zip（bootstrap 会探测；没有则提示安装）。
@@ -70,7 +84,8 @@ NyaaTrainer/
 │   ├── 02-stable-address.md       把浮动地址固化成重启后仍有效的条目
 │   ├── 03-standalone-trainer.md   打包成独立修改器 exe（含小面板 UI）
 │   ├── 04-ce-bridge.md            CE 与本仓库的通道（前置工作链）
-│   └── PLAN-standalone-workspace.md  独立工作区改造计划（SSOT，归档用）
+│   └── history/
+│       └── PLAN-standalone-workspace.md  独立工作区改造计划（SSOT，已完成归档）
 │
 ├── bootstrap/                 Agent 引导原料（仓库自研 + 已获准分发的部署件）
 │   ├── main_boot.lua             追加进 main.lua 的三段引导正文
