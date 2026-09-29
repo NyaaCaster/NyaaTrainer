@@ -8,7 +8,7 @@
       1. 连通性探测下载源（失败/超时 -> 提示开启翻墙软件后重试，共 3 论）
       2. 下载 CE 7.7 纯净便携 zip 到 runtime\downloads\（或 -CePackage 注入本地 zip，离线装配）
       3. 校验 zip SHA256（$Ce77ZipSha256 白名单，防篡改）
-      4. Expand-Archive 解压到 runtime\ce\Cheat Engine\（纯净包已内嵌引导三件与补丁版
+      4. 7z 解压到 runtime\ce\Cheat Engine\（纯净包为 7z 格式，已内嵌引导三件与补丁版
          ceMCP.lua，解压即成品——不再有"执行安装器"环节，规避 CE 官方下载链路的捆绑投放）
       5. 幂等校验引导三件（dsh_lib / dsh_stable / extras\ceMCP.lua 与 main.lua 引导段）；
          纯净包自带版本即为成品，仓库 bootstrap\ 引导件仅作对照/修复源
@@ -53,9 +53,10 @@ $ceDir    = Join-Path $ceRoot 'Cheat Engine'           # <CE_DIR>
 $dlDir    = Join-Path $runtime 'downloads'
 $bootDir  = Join-Path $repoRoot 'bootstrap'
 
-# 下载源（用户服务器分发的纯净便携 zip；填入 URL 的同时把 zip 的 SHA256 写进 $Ce77ZipSha256）
-$Ce77ZipUrl    = ''        # ← 待用户打包上传后填入
-$Ce77ZipSha256 = ''        # ← zip 的 SHA256（防篡改白名单；留空则跳过白名单校验）
+# 下载源（用户服务器分发的 CE 7.7 纯净便携包，7z 格式；URL 与 SHA256 白名单成对维护）
+$Ce77ZipUrl    = 'https://h.nyaa.host:5245/sd/yAwpTSjT/'
+$Ce77ZipSha256 = '1cd9a83e4f1eaec6e90249b96fbc41ab2026c8c796ff7ef83042d0eb1f2ac259'
+$Ce77ZipName   = 'CE77_Portable.7z'
 
 function Write-Step([string]$m) { if (-not $Quiet) { Write-Host "==> $m" -ForegroundColor Cyan } }
 function Write-Ok2([string]$m)  { Write-Host "  OK $m" -ForegroundColor Green }
@@ -91,6 +92,15 @@ function Get-File([string]$url, [string]$outFile) {
     throw "下载 3 次均失败：$url（若为网络原因请开翻墙后重试）"
 }
 
+function Get-7z {
+    $cmd = Get-Command 7z.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    foreach ($p in @("${env:ProgramFiles}\7-Zip\7z.exe", "${env:ProgramFiles(x86)}\7-Zip\7z.exe")) {
+        if (Test-Path $p) { return $p }
+    }
+    return $null
+}
+
 foreach ($d in @($runtime, $ceRoot, $dlDir)) {
     New-Item -ItemType Directory -Path $d -Force | Out-Null
 }
@@ -115,7 +125,7 @@ if (-not $SkipCeDeploy) {
             exit 4
         }
         Write-Step '下载 Cheat Engine 7.7 纯净便携包'
-        $pkg = Join-Path $dlDir 'CE77_Portable.zip'
+        $pkg = Join-Path $dlDir $Ce77ZipName
         Get-File -url $Ce77ZipUrl -outFile $pkg
         Write-Ok2 ('zip {0:N1} MB' -f ((Get-Item -LiteralPath $pkg).Length / 1MB))
     }
@@ -125,14 +135,22 @@ if (-not $SkipCeDeploy) {
     $expected = ''
     if ($Ce77ZipSha256) { $expected = $Ce77ZipSha256.ToLower() }
     if ($expected -and ($zipHash -ne $expected)) {
-        Write-Err2 "zip SHA256 不符！expected=$expected actual=$zipHash（疑似被替换/损坏，zip 保留在 $pkg 供排查）"
+        Write-Err2 "SHA256 不符！expected=$expected actual=$zipHash（疑似被替换/损坏，包保留在 $pkg 供排查）"
         exit 5
     }
     if (-not $expected) { Write-Warn2 "（未配置期望哈希，跳过白名单校验；实际 SHA256 = $zipHash）" }
     else { Write-Ok2 "SHA256 白名单校验通过" }
 
     Write-Step "解压到 $ceRoot"
-    Expand-Archive -LiteralPath $pkg -DestinationPath $ceRoot -Force
+    # 7z 格式纯净包（用户服务器分发）；系统 7-Zip 是本步硬依赖
+    $sz = Get-7z
+    if (-not $sz) {
+        Write-Err2 '未找到 7-Zip（解 7z 便携包必需）。'
+        Write-Warn2 '请安装 7-Zip（https://www.7-zip.org/ ，访问不畅需翻墙），或把 7z.exe 加入 PATH 后重跑。'
+        exit 3
+    }
+    & $sz x $pkg -o"$ceRoot" -y -bso0 -bsp0
+    if ($LASTEXITCODE -ne 0) { throw "7z 解压失败（exit=$LASTEXITCODE）。下载物保留在 $pkg 以便排查。" }
 
     # 归一化目录名：zip 内可能带一层包装目录
     $marker = Join-Path $ceDir 'cheatengine-x86_64.exe'

@@ -154,14 +154,14 @@ runtime/downloads/
 
 ### §4-C 装配与端到端验证（真人操作 + agent 检查）
 
-- ⬜ **C1** 用户给出服务器 ceMCP.lua URL → 填入 §5 并 commit 到 `bootstrap/`。
-- ⬜ **C2** 在一台**无现有 CE 环境**的路径（或临时 `$env:TEMP\nt_test`）验证 `bootstrap.ps1` 全流程：连通性探测 → 下载 CE 7.7 → 7z 解压 → 部署引导 → 删安装包 → 三通道自检全绿。
-- ⬜ **C3** 三通道各自实测（对 Tutorial 目标进程）：
+- ✅ **C1**（用户服务器 URL: https://h.nyaa.host:5245/sd/yAwpTSjT/ + SHA256 1cd9a83e…，7z 格式含一层目录） 用户给出服务器 ceMCP.lua URL → 填入 §5 并 commit 到 `bootstrap/`。
+- ✅ **C2**（2026-09-30 本体仓库实跑：下载 14.7MB → SHA256 白名单 → 7z 解压 → 目录归一 → 引导一致化 → 18 项自检全绿） 在一台**无现有 CE 环境**的路径（或临时 `$env:TEMP\nt_test`）验证 `bootstrap.ps1` 全流程：连通性探测 → 下载 CE 7.7 → 7z 解压 → 部署引导 → 删安装包 → 三通道自检全绿。
+- ✅ **C3**（三通道默认路径全绿：42/引导态/get_modules/MCP stdio 四步） 三通道各自实测（对 Tutorial 目标进程）：
   - `ce-lua.ps1 -Code "return 6*7"` → `RETURN: 42`
   - `ce-mcp.ps1 -Tool get_modules` 有 JSON 返回
   - `python ce_mcp_server.py` stdio 至少 `initialize` + `tools/list` 通
 - ⬜ **C4** `make_trainer.py` 用 `examples/pandora/stable.CT` 出一个独立 exe，双击弹面板可改值（G 盘 Pandora 游戏）。
-- ⬜ **C5** 安装包清理验证：`runtime/downloads/` 空。
+- ✅ **C5**（downloads/ 用后即删已验证为空） 安装包清理验证：`runtime/downloads/` 空。
 - ⬜ **C6** 修改器 exe 在用户桌面双击可用（Solar 替换/改值/锁定都到位）。
 
 ### §4-D DSH 工作区联动（改完 A/B/C 后）
