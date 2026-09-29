@@ -207,6 +207,11 @@ runtime/downloads/
 - 2026-09-30 修订：
   1. 「是否已装 CE」分支整体**删除**（用户修订 1），一律走下载解压。
   2. ceMCP.lua 来源改为**用户提供的服务器 URL**（用户修订 2），论坛直链方案取消。补丁版绝对路径已确认：`G:\game\Cheat Engine\extras\ceMCP.lua`。
+- 2026-09-30 事故与再拍板：
+  1. **事故**：CE 官网 downloads 页的 Windows 直链实为 ReasonLabs/Razer 多产品捆绑投放器（静默执行装出 RAV Endpoint Protection + Razer Axon + 真 CE 7.7 三件），已全部清理干净（服务/进程/目录/卸载表/计划任务全绿）。教训写死进 bootstrap.ps1：**未经内容验证的 URL 一律不入库、一律不执行；永不执行安装器，只解压已校验 zip**。
+  2. **ceMCP 内嵌拍板（用户）**：纯净便携包直接内嵌补丁版 extras\ceMCP.lua，服务器不再单独提供 ceMCP.lua 下载；bootstrap\ceMCP.lua 保留为仓库对照/修复源。
+  3. **分发物形态（用户）**：CE 7.7 纯净便携 zip（从已验证的 G:\game\Cheat Engine 中文补丁版构建，72MB/347 文件，含引导三件+ceMCP，开箱即用），放用户服务器；bootstrap 改为「下载 zip → SHA256 白名单校验 → Expand-Archive 解压即成品」。
+  4. 纯净包验证全绿：17 项关键件 + license + 三通道（42/引导态/get_modules/calc/MCP stdio 四步）+ make_trainer 冒烟（pandora 表 → 10.4MB exe 产出正常）。
 - 2026-09-30 追加确认（本轮）：**下载清单翻墙审查完成**，CE 官网安装包 +（新机器时的）7-Zip 是唯二「大概率需翻墙」项；ceMCP.lua 走用户服务器、Python 走 python.org 直连皆可用，bootstrap 统一前置连通性探测 + 明确提示。
 
 ---

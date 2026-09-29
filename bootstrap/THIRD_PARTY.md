@@ -4,10 +4,10 @@
 
 | 工件 | 版本 | 来源 | 许可 | 引入方式 |
 |---|---|---|---|---|
-| **Cheat Engine** 安装包（仅运行时下载解压，不随仓库分发） | 7.7 | <https://cheatengine.org/>（官网安装器）<br>源码：<https://github.com/cheat-engine/cheat-engine> | GPL-2.0 | `runtime/bootstrap.ps1` 下载 → 7z 免安装解压到 `runtime/ce/`；下载的安装包用后即删 |
+| **Cheat Engine 7.7 纯净便携包**（仅运行时下载解压，不随仓库分发） | 7.7 | 由维护者从已验证的 CE 7.7 部署构建的免安装 zip（官方构建 + 中文语言包 + Agent 引导内嵌），分发于维护者服务器<br>上游源码：<https://github.com/cheat-engine/cheat-engine> | GPL-2.0 | `runtime/bootstrap.ps1` 下载 → SHA256 白名单校验 → Expand-Archive 解压到 `runtime/ce/`；**永不执行安装器**（2026-09-30 事故：官网链路实为 ReasonLabs/Razer 捆绑投放器）；下载 zip 用后即删 |
 | **standalonephase1/2.cepack、tiny.cepack 等模板** | （随 CE 分发） | 同上 | GPL-2.0 | 属 CE 安装副本内文件，`make_trainer.py` 首次运行就地转 `.dat`，不单独入库 |
 | **Python embeddable zip** | 3.12.x | <https://www.python.org/downloads/windows/> | PSF-2.0 | 内嵌于 `runtime/tools/python/`（官方免安装分发包，未修改内容） |
-| **ceMCP Daemon（`bootstrap/ceMCP.lua`）** | 社区扩展 v1.1 | CE 论坛 topic 623995「Cheat Engine Simple MCP Server」；部署版含 2 处补丁（请求/响应文件固定到 CE 目录、主窗体就绪后自动启动），由维护者服务器分发 | 见文件头声明 | 已含补丁的部署版入库于 `bootstrap/ceMCP.lua`，SHA256 见同名 `.sha256` |
+| **ceMCP Daemon（补丁版）** | 社区扩展 v1.1 | CE 论坛 topic 623995「Cheat Engine Simple MCP Server」；部署版含 2 处补丁（请求/响应文件固定到 CE 目录、主窗体就绪后自动启动）。**2026-09-30 起随 CE 7.7 纯净便携包一并分发**（因 CE 官方下载链路捆绑投放，维护者决定将补丁版内嵌于便携包，不再单独提供下载；`bootstrap/ceMCP.lua` 保留为仓库对照/修复源） | 见文件头声明 | 纯净包内 `extras\ceMCP.lua`；仓库 `bootstrap/ceMCP.lua`+`.sha256` 为对照 |
 
 ## 说明
 
