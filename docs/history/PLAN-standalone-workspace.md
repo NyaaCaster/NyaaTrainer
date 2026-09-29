@@ -1,6 +1,6 @@
 # NyaaTrainer 独立 Agent 工作区改造计划（SSOT）
 
-> **状态：⏸ 待审核（用户审核通过前不动工）**
+> **状态：✅ 全部完成（2026-09-30 端到端闭环 + C4 用户实测通过，临时物已按用户指令销毁；已归档至 docs/history/）**
 > 本文件是本次改造的唯一进度跟踪文档（SSOT）。每个任务前的标记：`⬜ 待办` / `🔄 进行中` / `✅ 完成` / `⛔ 阻塞`。
 > 审核意见请直接追加到「§8 决策记录」。开工后本文件随进度更新标记，完工后作为改造复盘归档。
 
@@ -160,7 +160,7 @@ runtime/downloads/
   - `ce-lua.ps1 -Code "return 6*7"` → `RETURN: 42`
   - `ce-mcp.ps1 -Tool get_modules` 有 JSON 返回
   - `python ce_mcp_server.py` stdio 至少 `initialize` + `tools/list` 通
-- ⬜ **C4** `make_trainer.py` 用 `examples/pandora/stable.CT` 出一个独立 exe，双击弹面板可改值（G 盘 Pandora 游戏）。
+- ✅ **C4**（2026-09-30 用户实测通过：pandora 修改器 `D:\Hgame\NyaaTrainer\pandora_trainer.exe` 双击弹面板验收；测试通过后已按用户指令销毁；游戏本体 `D:\Hgame\2026-6\パンドラメイズ260427\Pandora.exe`） `make_trainer.py` 用 `examples/pandora/stable.CT` 出一个独立 exe，双击弹面板可改值（G 盘 Pandora 游戏）。
 - ✅ **C5**（downloads/ 用后即删已验证为空） 安装包清理验证：`runtime/downloads/` 空。
 - ⬜ **C6** 修改器 exe 在用户桌面双击可用（Solar 替换/改值/锁定都到位）。
 
