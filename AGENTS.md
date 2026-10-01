@@ -30,7 +30,9 @@ Test-Path "<仓库根>\runtime\ce\Cheat Engine\cheatengine-x86_64.exe"
 
 ## 1. 文档索引（`docs/`）
 
-四份方法论文档，**按"从零到成品"的顺序**：
+两组方法论文档：**01~04 是本仓库工具链的作业法**（按"从零到成品"顺序）；**05~11 是多引擎通用修改方法论**（按方法分类，遇到对应引擎时查阅）。
+
+### 工具链作业法（①→④）
 
 | # | 文档 | 解决什么 | 何时看 |
 |---|---|---|---|
@@ -45,12 +47,35 @@ Test-Path "<仓库根>\runtime\ce\Cheat Engine\cheatengine-x86_64.exe"
                     ④ 全程靠它驱动（通道）
 ```
 
+### 多引擎通用修改方法论（05~11）
+
+> 来源：对一类成熟的多引擎通用修改器（对十几个引擎建立稳定变量修改的公开工具）的机制
+> 逆向归纳（2026-10-02 完成，实证载体在 `tools\` 下；**文档已去工具名化**）。
+> **遇到非 Unity Mono 引擎的游戏要改数据时，先读 ⑤ 总览选方法，再进对应分篇。**
+
+| # | 文档 | 方法 | 适用引擎 |
+|---|---|---|---|
+| ⑤ | [`docs/05-engine-mod-methods-overview.md`](docs/05-engine-mod-methods-overview.md) | **总览**：六条方法论 + 引擎适用矩阵 + 选择决策树 + 引擎判定特征表 + 注入承载通道 | 全引擎 |
+| ⑥ | [`docs/06-method-runtime-script-eval.md`](docs/06-method-runtime-script-eval.md) | A 运行时脚本求值（eval 通道：JS/Ruby/TJS/Python/GDScript） | MV/MZ、Tyrano、VNMaker、XP/VX/VXAce（RGSS）、krkr2/z、Ren'Py、SRPG Studio、AGTK、Godot |
+| ⑦ | [`docs/07-method-data-file-parsing.md`](docs/07-method-data-file-parsing.md) | B 数据文件与存档解析重写（不碰内存） | **Wolf（主力）**、MV/MZ、RGSS 系、Ren'Py、Tyrano、krkr |
+| ⑧ | [`docs/08-method-object-model-mapping.md`](docs/08-method-object-model-mapping.md) | C 引擎对象模型映射（`$gameXXX`/`Agtk.*` 变量表协议） | MV/MZ、RGSS、Tyrano、AGTK、krkr、Ren'Py、RM2k（兼容运行时 API） |
+| ⑨ | [`docs/09-method-mono-runtime-invoke.md`](docs/09-method-mono-runtime-invoke.md) | D Mono/托管运行时调用 + 进程内桥（与 ①② 互补） | Unity Mono 通用、**RPG Developer Bakin**（Yukar 框架） |
+| ⑩ | [`docs/10-method-memory-scan-lock.md`](docs/10-method-memory-scan-lock.md) | E 内存扫描+锁定（兜底法 + 锁定工程学 + 环回被拦排障） | 全引擎兜底；RM2k 锁定主力；原生引擎唯一通道 |
+| ⑪ | [`docs/11-method-interpreter-command-injection.md`](docs/11-method-interpreter-command-injection.md) | F 解释器指令注入（兼容运行时扩展命令） | **RM2k/2k3（主力）**；Wolf 事件指令部分适用 |
+
 **要点速览**
 
 - **① Mono 侦察**：为什么别一上来扫内存（4 理由 + 两项目效率对比）／核心 5 步（列程序集 → dump 类清单 → 按名字锁候选 → dump 字段偏移 → 沿引用链找实例）／**三种数据形态**（静态字段型 / 实例字段型有单例 / **实例字段型无单例 → UI 管理器兜底**）／验证四步／坑位表（25+ 条）／`淫白の御供` 与 `Nurtale Nesche` 实战记录／**§8 调用托管方法 `mono_invoke_method`**（含管道安全与"按需建立管道"两条硬规矩）
 - **② 稳定地址**：稳定条目三形态／7 步总流程／**方法 A** 写·读·执行断点（含数据断点 trap 语义）／**方法 B** 多级指针／**方法 C** Mono 静态字段 + `identify` 反查（**§7.6 调托管方法**、**§10.1.1 无静态单例的实例字段路径**）／**方法 D** GUI 指针扫描／两次筛选法／踩坑表
 - **③ 独立修改器**：格式逆向（`stub + PE 资源 ARCHIVE/DECOMPRESSOR`、`.cepack`）／**无 GUI 全自动生成**／11 个必打包文件／小面板 UI（含**四个"看着能用其实不能用"的 API**、**任务栏显示**、`getControl(i)` 枚举控件）／**§4.4.1 界面结构规范：四模块分区 + 数值行控件排布 + 定值选项命名**／**§4.5.1 锁定功能只能有一个入口**／退出行为与残留进程／**DPI 陷阱与尺寸 API 不可靠的实测数据**／28 条坑位／**§7.1 生成侧自检**（含 Lua 作用域自查）
 - **④ CE 通道**：三条通道（`ce-lua.ps1` 任意 Lua ／ `ce-mcp.ps1` 8 个成品工具 ／ `ce_mcp_server.py` 标准 MCP 服务端）／跨会话原理／各 Agent 客户端接入法／安全开关
+- **⑤ 总览**：六法分类（A eval／B 文件解析／C 对象映射／D Mono 调用／E 内存兜底／F 指令注入）／**引擎适用矩阵**／选择决策树／**引擎判定特征表**（文件特征 + PE 版本资源）／四种注入承载（代理 DLL / OEP / 运行中 / 等待式）与回连通道
+- **⑥ eval 通道**：各解释器注入原理（V8 `RequestInterrupt`／Ruby `rb_eval_string`+`rb_protect`+版本分桶／TJS V2Link 插件／Ren'Py **主循环接管**／Godot **脚本文件执行**无字符串 eval）／通用 eval 命令协议／**eval 永远在游戏主线程执行**铁律
+- **⑦ 文件解析**：Wolf `Game.dat` 三库解析（SYS/User/Conf + Shift_JIS 码页 + 版本分桶）／MV/MZ JSON+VFS writeback／Marshal/pickle 存档**优先运行时改**／**工具写存档必须考虑原版引擎读取兼容**
+- **⑧ 对象映射**：快照导出器模板（sparse/dict/bag）／各引擎对象表（MV/RGSS/Tyrano/AGTK/krkr/Ren'Py 路径寻址）／**定义($dataXXX) 与当前值($gameXXX) 分清**／**容器只读、写回必须走官方 setter**
+- **⑨ Mono 调用**：CE Mono API vs 进程内桥两路径对比／进程内桥五 Mono 导出 + asmjit JIT／**Bakin 数据在引擎框架程序集（Yukar/SharpKmy）不在 Assembly-CSharp**／IL2CPP 未探索边界
+- **⑩ 内存兜底**：什么时候才扫内存／**锁的三层实现**（hook setter 首选 → CE 断点 → 周期重写限流+停摆）／锁持久化按类型分文件／**环回被流量过滤软件接管的排障**（加白名单没用，测 RPC 延迟基线）
+- **⑪ 指令注入**：RM2k 无脚本语言的通道＝兼容运行时 + 指令语义表／解释器级 API 清单／Maniac 扩展指令／**不要字节猜指令码，用开源运行时的规范**
 
 ---
 
@@ -271,7 +296,7 @@ _SIGNATURE = b"Nyaa be with you."
 | 事项 | 说明 |
 |---|---|
 | **仅限 Unity Mono** | 目前只跑通 Mono；IL2CPP 后端（`GameAssembly.dll`）未探索 |
-| **非 Unity 引擎** | Godot / Ren'Py / RPGMaker 等无此数据层，走传统断点+指针链（见 `docs/02-stable-address.md` §4） |
+| **非 Unity 引擎** | Godot / Ren'Py / RPGMaker 等无此数据层——**先读 `docs/05-engine-mod-methods-overview.md` 选方法**（eval 通道 / 文件解析 / 指令注入），CE 断点+指针链只作兜底（见 `docs/02-stable-address.md` §4） |
 | **反作弊** | 联网游戏或有反调试的游戏慎用；采集器注入会被检测 |
 | **安全** | `openLuaServer` 是**无认证的本地管道**（等于任意 Lua 执行），仅在本机自用环境开启 |
 | **用途** | 仅限**单机游戏**的个人学习与娱乐性修改；不得用于联机/竞技/商业场景 |
