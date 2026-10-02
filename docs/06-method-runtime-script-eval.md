@@ -189,6 +189,9 @@ hook 实现；不兼容时报 "no compatible version bucket found"）。
 | AGTK | V8 JS eval | — | `Agtk.switches/variables` |
 | Godot 4.x | **GDScript 文件执行**（无字符串 eval） | 版本桶（4.2+ Callable 体系） | `SceneTree`/autoload |
 
+> **hook 载体来源**：上表全部解释器的 hook DLL（含 Godot 版本桶）由 `runtime\bootstrap.ps1` 统一装配到
+> `runtime\tools\GameHooks\`（见 05 篇 §4.1）；注入动作本仓库走 CE（`injectDll` / `executeCodeEx`），不需要独立的注入器程序。
+
 ---
 
 ## 4. 操作骨架（可复用模板）

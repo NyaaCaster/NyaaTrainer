@@ -18,7 +18,7 @@
 从 https://github.com/NyaaCaster/NyaaTrainer.git 安装 NyaaTrainer 项目
 ```
 
-Agent 会：询问你项目 clone 到哪个目录 → `git clone` → 运行 `runtime\bootstrap.ps1` 下载 **Cheat Engine 7.7 纯净便携包**并装配 → 三条 CE 通道与修改器生成器即刻可用。
+Agent 会：询问你项目 clone 到哪个目录 → `git clone` → 运行 `runtime\bootstrap.ps1` 下载 **Cheat Engine 7.7 纯净便携包**与 **GameHooks 钩子依赖包**（各引擎 hook 载体）并装配 → 三条 CE 通道与修改器生成器即刻可用。
 
 > 装配只落在仓库 `runtime\` 内：**不写注册表、不执行任何安装器、不碰你已装的任何软件**；要求本机已有 7-Zip（解 7z 包用）。国内网络请先开翻墙（bootstrap 对下载源做连通性探测，失败会停下提示）。
 
@@ -50,7 +50,7 @@ Agent 会：询问你项目 clone 到哪个目录 → `git clone` → 运行 `ru
 .\runtime\bootstrap.ps1
 ```
 
-它自动完成：从维护者服务器下载 **CE 7.7 纯净便携 7z 包** → SHA256 白名单校验 → **7z 免安装解压**（免装、免注册表、免驱动、**全程不执行任何安装器**）到 `runtime\ce\`（纯净包已内嵌 Agent 引导，开箱即用）→ 幂等校验引导三件 → **删除下载物** → 文件级自检。Python 3.12（embeddable）已内嵌于 `runtime\tools\python\`，无需安装。
+它自动完成：从维护者服务器下载 **CE 7.7 纯净便携 7z 包** → SHA256 白名单校验 → **7z 免安装解压**（免装、免注册表、免驱动、**全程不执行任何安装器**）到 `runtime\ce\`（纯净包已内嵌 Agent 引导，开箱即用）→ 幂等校验引导三件 → 下载 **GameHooks.7z 钩子依赖包**（各引擎 hook 载体）→ **7z 免安装解压**到 `runtime\tools\GameHooks\` → **删除下载物** → 文件级自检。Python 3.12（embeddable）已内嵌于 `runtime\tools\python\`，无需安装。
 
 > ⚠️ **国内网络提示**：CE 官网站点通常需要代理，**请先开启翻墙软件再运行 bootstrap**（脚本会对下载源做连通性探测，失败会停下并给出同样提示）。完全无法联网时可用本地安装包离线装配：`.\runtime\bootstrap.ps1 -CePackage <安装包路径>`。
 > 系统需已有 7-Zip（bootstrap 会探测；没有则提示安装）。
@@ -95,9 +95,9 @@ NyaaTrainer/
 │   └── THIRD_PARTY.md            第三方工件来源与许可
 │
 ├── runtime/                   运行时装配区（bootstrap.ps1 管；ce/ 与 downloads/ 不进仓库）
-│   ├── bootstrap.ps1             ★ 装配器：下载 CE 7.7 → 7z 解压 → 部署引导 → 删安装包 → 自检
+│   ├── bootstrap.ps1             ★ 装配器：下载 CE 7.7 → 7z 解压 → 部署引导 → 下载 GameHooks.7z → 解压 → 删安装包 → 自检
 │   ├── ce/                       CE 免安装副本（bootstrap 产出，gitignore）
-│   └── tools/python/             ★ 内嵌 Python 3.12 embeddable（随仓库分发）
+│   └── tools/                    ★ GameHooks/（各引擎 hook 载体依赖，bootstrap 产出）+ python/（内嵌 Python，随仓库分发）
 │
 ├── src/                       可执行代码
 │   ├── ce_mcp_server.py          标准 MCP 服务端（Agent 首选接入方式）

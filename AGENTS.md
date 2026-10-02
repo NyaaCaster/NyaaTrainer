@@ -19,7 +19,7 @@ Test-Path "<仓库根>\runtime\ce\Cheat Engine\cheatengine-x86_64.exe"
 - **False（clone 后首次）** → 引导用户运行 `runtime\bootstrap.ps1`（唯一装配入口）：
   1. **提前告知用户：CE 官网站点在国内网络通常需要代理，请先开翻墙软件**（bootstrap 会先做连通性探测，失败 3 次会停在同一条提示上）；
   2. 无网络可用 `-CePackage <本地安装包路径>` 离线装配；
-  3. bootstrap 动作：下载 CE 7.7 → **7z 免安装解压**到 `runtime\ce\`（免装、免注册表、免驱动）→ 部署引导 → **用后即删安装包** → 文件级自检（`-TestChannels` 还可拉 CE 实试通道 1）。
+  3. bootstrap 动作：下载 CE 7.7 → **7z 免安装解压**到 `runtime\ce\`（免装、免注册表、免驱动）→ 部署引导 → 下载 GameHooks.7z（各引擎 hook 载体依赖）→ **7z 免安装解压**到 `runtime\tools\GameHooks\` → **用后即删安装包** → 文件级自检（`-TestChannels` 还可拉 CE 实试通道 1；`-SkipGameHooksDeploy` 可跳过钩子依赖段）。
 - **不要**把用户自装的 CE 接进来（版本/组件不可控，无法保证满足项目需求）；本仓库只认 `runtime\ce\Cheat Engine` 这一部署。
 - **内嵌 Python**：`<repo>\runtime\tools\python\python.exe` 已随仓库分发（3.12 embeddable，纯标准库，无 pip 需求），三个 Python 脚本优先用它跑；机器上的系统 Python 是备用。
 - `config.yaml`（由 `config.example.yaml` 复制）**不再**登记 CE / games_root 路径；`games[].dir` 降为可选——会话现场确定后可填可不填。
@@ -95,8 +95,9 @@ Test-Path "<仓库根>\runtime\ce\Cheat Engine\cheatengine-x86_64.exe"
 | `bootstrap/dsh_lib.lua` | CE 侧 Lua 往返桥（`dsh_out` / `dsh_eval` / `dsh_run_file`） |
 | `bootstrap/dsh_stable.lua` | Mono **静态字段**稳定条目框架（`resolve` / `installAll` / `identify`） |
 | `bootstrap/main_boot.lua` | 追加进 `<CE_DIR>\main.lua` 的三段引导正文（bootstrap.ps1 幂等部署） |
-| `runtime/bootstrap.ps1` | ★ **装配器**：下载 CE 7.7 → 7z 解压 → 部署引导 → 删安装包 → 自检 |
+| `runtime/bootstrap.ps1` | ★ **装配器**：下载 CE 7.7 → 7z 解压 → 部署引导 → 下载 GameHooks.7z → 解压到 `runtime\tools\GameHooks\` → 删安装包 → 自检 |
 | `runtime/tools/python/` | ★ 内嵌 Python 3.12 embeddable（三个 Python 脚本的运行时，无安装无 pip） |
+| `runtime/tools/GameHooks/` | ★ **各引擎 hook 载体依赖**（bootstrap 自动装配）：六引擎 hook DLL 桶 + Mono 进程内桥 + 承载/PE 工具 + Wolf 版本桶 |
 
 **CE 侧需要加载的引导**（bootstrap.ps1 自动部署到 `<CE_DIR>\main.lua` 末尾，详见 `docs/04-ce-bridge.md`）：
 
@@ -286,6 +287,7 @@ _SIGNATURE = b"Nyaa be with you."
 | **PowerShell 5.1+** | 通道脚本 | 系统自带 | — | Windows x64 自带，无需处理 |
 | **7-Zip** | 解 CE 安装包（Inno Setup） | <https://www.7-zip.org/> | LGPL-2.1 | bootstrap 探测系统已有 7z；无则明确提示用户安装（站点访问不畅需翻墙）。本体不自动安装 |
 | **ceMCP.lua（社区扩展部署版）** | 文件通道轮询内核 | CE 论坛 topic 623995（部署版在维护者服务器分发） | 见文件头 | 已随仓库入库 `bootstrap\ceMCP.lua`（SHA256 校验），无需联网 |
+| **GameHooks.7z（钩子依赖包）** | 六引擎 hook 载体（Godot/RGSS/Python/krkr/V8/Agtk/SRPG/wolf 各桶）+ Mono 进程内桥（MonoJunkie/0Harmony/kmy）+ 承载与 PE 工具（注入器/代理 DLL 池/editbin）+ Wolf 版本桶 | **无开源仓库来源**（用户服务器分发 <https://h.nyaa.host:5245/sd/7XzFoXJA/>） | 闭源分发件 | **bootstrap.ps1 自动**：下载 → SHA256 白名单校验 → 7z 免安装解压到 `runtime	ools\GameHooks\` → 安装包用后即删。未入库任何来源不明的 URL；哈希白名单成对维护 |
 
 > 翻墙提示原则（用户拍板）：bootstrap 对每个外网下载做前置连通性探测（HEAD 3 次 × 5s），失败统一提示「该站点在国内网络环境下可能需要翻墙，请开启后重新运行」。GitHub clone 本仓库本身同理，由上层 agent 负责提示。
 

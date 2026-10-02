@@ -64,6 +64,8 @@ Wolf 是原生 C++ 引擎，无脚本 eval；它的**所有变量都活在数据
    `getFileData` / `getFileDataBin`（引擎数据读）、`setCheatData`（写入）、`wolfVer`（版本）。
    运行时修改 = hook 住引擎的数据访问层，改它的内存 DB 副本。
    ⚠️ 官方提示 Wolf 3.0 的 cheat 未完成、cheat 可能引发游戏不稳（内存不够时还会拒绝启用）。
+   （这两个 hook DLL 已随 `runtime\tools\GameHooks\` 装配；老版本引擎 exe 不可注入时的
+   各版本兼容层在 `runtime\tools\GameHooks\Wolf\`，均由 bootstrap 装配，见 05 篇 §4.1。）
 
 ### 1.4 存档格式坑（Wolf 特有，值得记住的"工具与原版兼容"问题）
 

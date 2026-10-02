@@ -38,6 +38,10 @@ _dsh_out_*.txt
 Thumbs.db
 desktop.ini
 
-# runtime 装配区（bootstrap.ps1 产出：CE 免安装副本 + 下载缓存；内嵌 python 不忽略）
+# runtime 装配区（bootstrap.ps1 产出：CE 免安装副本 + GameHooks 钩子依赖 + 下载缓存；内嵌 python 不忽略）
 runtime/ce/
 runtime/downloads/
+runtime/tools/GameHooks/
+
+# 工程实例工作区（侦察解包/存档改写等作业产物，只留本地）
+work/

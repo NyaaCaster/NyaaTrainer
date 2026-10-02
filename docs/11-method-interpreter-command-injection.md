@@ -38,6 +38,10 @@ RPG Maker 2k/2k3 的"程序"是**事件指令列表**（打开菜单、改变量
 
 游戏数据（`RPG_RT.ldb`/`.lmt`、地图）**不变**，只是执行器被替换——数据兼容性由运行时保证。
 
+> **下载来源（开源仓库）**：EasyRPG Player —— <https://github.com/EasyRPG/Player>
+> （Windows 预编译版见其 Releases；下载后放到 `runtime\tools\` 供工序使用）。
+> ⚠️ 当前 `runtime\tools\GameHooks\` 里**没有** Windows 版 Player 本体——遇到 RM2k 游戏时按上面地址获取。
+
 ---
 
 ## 1. 兼容运行时暴露的修改 API（样本工具实测清单）

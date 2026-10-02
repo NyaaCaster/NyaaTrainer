@@ -146,6 +146,19 @@
 **进程内服务（Unity 系特有）**：对 RPG Developer Bakin 这类 Unity Mono 游戏，注入的 DLL 用 **0Harmony**
 在进程内直接挂 .NET 方法，并起一个**进程内 WebSocket 服务**对外暴露（与回连方向相反：这次 DLL 是服务端）。
 
+### 4.1 载体依赖的获取（两种方式，按依赖性质分流）
+
+承载层用到的 hook DLL / 工具，按**是否有开源仓库来源**分两种获取方式：
+
+| 方式 | 适用 | 做法 |
+|---|---|---|
+| **开源工具** | 有公开代码仓库的（如 RM2k 兼容运行时 Player） | 在对应分篇**标注下载来源**（仓库地址），工序用到时下载到 `runtime\tools\` |
+| **无开源来源的钩子依赖** | 各引擎 hook DLL（版本桶、注入器、代理 DLL 池、PE 工具、Wolf 版本桶等） | 由 `runtime\bootstrap.ps1` 统一装配：下载 `GameHooks.7z`（URL 与 SHA256 白名单成对维护，见脚本顶部常量）→ 7z 免安装解压到 `runtime\tools\GameHooks\` → 安装包用后即删 |
+
+> 分篇内提及的具体 hook 依赖（如 `wolfHook.dll`、`kmyHookUnity.dll`、Godot 版本桶 hook）默认都来自
+> `runtime\tools\GameHooks\`；**方法论文档不指认这些依赖的出处来源，只声明"由 bootstrap 装配"**。
+> 依赖缺失时先跑 `runtime\bootstrap.ps1`（或 `-SkipCeDeploy` 只补钩子段），不要临场找替代品。
+
 ---
 
 ## 5. 通用保险：改前的三件事（跨引擎 MUST）

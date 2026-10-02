@@ -29,6 +29,10 @@ Unity Mono 改数据有两条等价路径，**二选一或混用**：
 
 ## 1. 路径 2 的实现要点（进程内桥）
 
+> **本篇涉及的注入 DLL 依赖**（`MonoJunkie` 形态 x86/x64 两版、`0Harmony.dll`、Bakin 侧
+> `kmyHookUnity.dll` + 启动替换组件）已由 `runtime\bootstrap.ps1` 装配到 `runtime\tools\GameHooks\`
+> （见 05 篇 §4.1）；注入动作走 CE，无需独立注入器。
+
 ### 1.1 DLL 侧：Mono 运行时访问
 
 样本工具的注入 DLL（x86/x64 两版，`MonoJunkie` 形态）只引用**五个 Mono 导出**就够用：

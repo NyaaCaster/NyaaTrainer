@@ -12,8 +12,10 @@
          ceMCP.lua，解压即成品——不再有"执行安装器"环节，规避 CE 官方下载链路的捆绑投放）
       5. 幂等校验引导三件（dsh_lib / dsh_stable / extras\ceMCP.lua 与 main.lua 引导段）；
          纯净包自带版本即为成品，仓库 bootstrap\ 引导件仅作对照/修复源
-      6. 删除下载的 zip（保持 runtime\downloads\ 干净；校验失败才保留以便排查）
-      7. 自检：文件级关键件齐全；-TestChannels 可选拉起 CE 实试通道 1
+      6. 下载 GameHooks.7z（各引擎 hook 载体依赖，无开源来源，用户服务器分发 + SHA256 白名单）
+         -> 7z 免安装解压到 runtime\tools\GameHooks\；-SkipGameHooksDeploy 可跳过
+      7. 删除下载的 zip（保持 runtime\downloads\ 干净；校验失败才保留以便排查）
+      8. 自检：文件级关键件齐全（CE 18 项 + GameHooks 29 项）；-TestChannels 可选拉起 CE 实试通道 1
 
     路径全部相对本脚本位置（= <repo>\runtime\），仓库整体可搬家、可拷贝。
     本机已有的独立 CE 部署（legacy）不受影响，也不被检测/使用。
@@ -35,6 +37,7 @@
 param(
     [string]$CePackage,
     [switch]$SkipCeDeploy,
+    [switch]$SkipGameHooksDeploy,
     [switch]$TestChannels,
     [switch]$Force,
     [switch]$Quiet
@@ -57,6 +60,13 @@ $bootDir  = Join-Path $repoRoot 'bootstrap'
 $Ce77ZipUrl    = 'https://h.nyaa.host:5245/sd/yAwpTSjT/'
 $Ce77ZipSha256 = '1cd9a83e4f1eaec6e90249b96fbc41ab2026c8c796ff7ef83042d0eb1f2ac259'
 $Ce77ZipName   = 'CE77_Portable.7z'
+
+# GameHooks：各引擎 hook 载体依赖包（无开源仓库来源，用户服务器分发；URL 与 SHA256 白名单成对维护）
+# 内容：六引擎 hook DLL（GodotHook/RGSSHook/PythonHook/krkrz/mzHook/AgtkHook/SRPGHook/wolfHook）、
+#       Mono 进程内桥（MonoJunkie/0Harmony/kmy）、承载与 PE 工具（注入器/代理 DLL 池/editbin）、Wolf 版本桶
+$GameHooksUrl    = 'https://h.nyaa.host:5245/sd/7XzFoXJA/'
+$GameHooksSha256 = '75d41798f2872bfbb722de855c81ab6d3779885c620e0ad6336e6a575f929093'
+$GameHooksName   = 'GameHooks.7z'
 
 function Write-Step([string]$m) { if (-not $Quiet) { Write-Host "==> $m" -ForegroundColor Cyan } }
 function Write-Ok2([string]$m)  { Write-Host "  OK $m" -ForegroundColor Green }
@@ -104,6 +114,9 @@ function Get-7z {
 foreach ($d in @($runtime, $ceRoot, $dlDir)) {
     New-Item -ItemType Directory -Path $d -Force | Out-Null
 }
+# GameHooks 解压目标：runtime\tools\（包内自带一层 GameHooks\ 目录）
+$ghRoot = Join-Path $runtime 'tools'
+$ghDir  = Join-Path $ghRoot 'GameHooks'
 
 # ---------- 1. CE 解压目录防覆盖 ----------
 if ((Test-Path $ceDir) -and (-not $SkipCeDeploy) -and (-not $Force)) {
@@ -170,6 +183,44 @@ if (-not $SkipCeDeploy) {
     if (-not $CePackage) { Remove-Item -LiteralPath $pkg -Force -ErrorAction SilentlyContinue }
     else { Write-Ok2 "本地 zip 保留未删：$pkg" }
     Write-Ok2 'CE 7.7 纯净便携包解压完成（全程未执行任何安装器）'
+}
+
+# ---------- 2b. GameHooks 钩子依赖（下载 -> 校验 -> 7z 解压） ----------
+if (-not $SkipGameHooksDeploy) {
+    $ghMarker = Join-Path $ghDir 'GodotHook_4_2_0.dll'
+    if ((Test-Path -LiteralPath $ghMarker) -and (-not $Force)) {
+        Write-Err2 "已存在 $ghMarker（重复运行？）"
+        Write-Warn2 '重装请删 runtime\tools\GameHooks 或加 -Force；跳过本段用 -SkipGameHooksDeploy。'
+        exit 2
+    }
+    Write-Step '下载 GameHooks 钩子依赖包'
+    $ghPkg = Join-Path $dlDir $GameHooksName
+    Get-File -url $GameHooksUrl -outFile $ghPkg
+    Write-Ok2 ('包 {0:N1} MB' -f ((Get-Item -LiteralPath $ghPkg).Length / 1MB))
+
+    $ghHash = (Get-FileHash -LiteralPath $ghPkg -Algorithm SHA256).Hash.ToLower()
+    if ($ghHash -ne $GameHooksSha256.ToLower()) {
+        Write-Err2 "SHA256 不符！expected=$GameHooksSha256 actual=$ghHash（疑似被替换/损坏，包保留在 $ghPkg 供排查）"
+        exit 5
+    }
+    Write-Ok2 'SHA256 白名单校验通过'
+
+    Write-Step "解压到 $ghRoot"
+    $sz = Get-7z
+    if (-not $sz) {
+        Write-Err2 '未找到 7-Zip（解 7z 包必需）。'
+        Write-Warn2 '请安装 7-Zip（https://www.7-zip.org/ ，访问不畅需翻墙），或把 7z.exe 加入 PATH 后重跑。'
+        exit 3
+    }
+    & $sz x $ghPkg -o"$ghRoot" -y -bso0 -bsp0
+    if ($LASTEXITCODE -ne 0) { throw "7z 解压失败（exit=$LASTEXITCODE）。下载物保留在 $ghPkg 以便排查。" }
+
+    # 落位校验：包内自带一层 GameHooks\，关键件与 Wolf 版本桶必须在场
+    if (-not (Test-Path -LiteralPath $ghMarker)) { throw "解压后未找到 GameHooks 落位标记：$ghMarker（看 $ghRoot）" }
+    if (-not (Test-Path -LiteralPath (Join-Path $ghDir 'Wolf'))) { throw "GameHooks\Wolf 版本桶缺失（解压不完整？）" }
+
+    Remove-Item -LiteralPath $ghPkg -Force -ErrorAction SilentlyContinue
+    Write-Ok2 'GameHooks 钩子依赖装配完成（全程未执行任何安装器）'
 }
 
 # ---------- 3. 引导三件幂等校验/修复（纯净包自带；仓库 bootstrap\ 为对照源） ----------
@@ -251,7 +302,26 @@ foreach ($rel in $required) {
     if (-not (Test-Path -LiteralPath (Join-Path $ceDir $rel))) { $missing += $rel }
 }
 if ($missing.Count -gt 0) { throw ("关键文件缺失：`n  " + ($missing -join "`n  ")) }
-Write-Ok2 ('关键文件 18 项齐全 @ ' + $ceDir)
+Write-Ok2 ('CE 关键文件 18 项齐全 @ ' + $ceDir)
+
+# GameHooks 钩子依赖关键件（六引擎桶 + Mono 桥 + 承载/PE 工具 + Wolf 版本桶代表）
+$ghRequired = @(
+    'GodotHook.dll', 'GodotHook_4_2_0.dll',
+    'mzHook.dll', 'krkr2Hook.dll', 'krkrzHook64.dll', 'tjsjson64.dll',
+    'RGSSHook.dll', 'RGSSHook64.dll', 'PythonHook.dll', 'PythonHook64.dll',
+    'AgtkHook.dll', 'SRPGHook.dll',
+    'wolfHook.dll', 'wolfHook3.dll', 'Wolf\Wolfexe3695p',
+    'MonoJunkiex64.dll', 'MonoJunkiex86.dll', '0Harmony.dll',
+    'kmyHook.exe', 'kmyHookUnity.dll', 'BakinLauncher.exe', 'BakinPlayerWrapper.exe',
+    'PIDDLLInject64.exe', 'PidFinder.exe', 'GetPEFileInfo.exe', 'CPUInstructionCheck.exe',
+    'remoteOps.dll', 'editbin\editbin.exe', 'loaderDLL\ver64'
+)
+$ghMissing = @()
+foreach ($rel in $ghRequired) {
+    if (-not (Test-Path -LiteralPath (Join-Path $ghDir $rel))) { $ghMissing += $rel }
+}
+if ($ghMissing.Count -gt 0) { throw ("GameHooks 关键件缺失：`n  " + ($ghMissing -join "`n  ")) }
+Write-Ok2 ('GameHooks 关键件 ' + $ghRequired.Count + ' 项齐全 @ ' + $ghDir)
 
 # ---------- 5. 通道级自检（可选） ----------
 if ($TestChannels) {
@@ -287,6 +357,7 @@ Write-Host  @"
 
 NyaaTrainer 运行时就绪：
   <CE_DIR>  = $ceDir
+  GameHooks = $ghDir （各引擎 hook 载体依赖）
   通道 1    = src\ce-lua.ps1   （任意 Lua，默认即连 <CE_DIR>，无需 -CeDir）
   通道 2    = src\ce-mcp.ps1   （8 个成品工具，文件协议）
   通道 3    = src\ce_mcp_server.py （标准 MCP；用 runtime\tools\python\python.exe 运行）
