@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="52">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>0</ID>
+      <Description>"钱"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>1C8F2EED934</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"考核"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>21A155CC540</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>3</ID>
+      <Description>"治安"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>21A155CC558</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>4</ID>
+      <Description>"HP"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>21A155CC4B8</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>2</ID>
+      <Description>"体力"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>21A155CC4BC</Address>
+    </CheatEntry>
+  </CheatEntries>
+  <UserdefinedSymbols/>
+</CheatTable>

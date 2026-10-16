@@ -47,7 +47,7 @@ Test-Path "<仓库根>\runtime\ce\Cheat Engine\cheatengine-x86_64.exe"
                     ④ 全程靠它驱动（通道）
 ```
 
-### 多引擎通用修改方法论（05~11）
+### 多引擎通用修改方法论（05~12）
 
 > 来源：对一类成熟的多引擎通用修改器（对十几个引擎建立稳定变量修改的公开工具）的机制
 > 逆向归纳（2026-10-02 完成，实证载体在 `tools\` 下；**文档已去工具名化**）。
@@ -62,6 +62,7 @@ Test-Path "<仓库根>\runtime\ce\Cheat Engine\cheatengine-x86_64.exe"
 | ⑨ | [`docs/09-method-mono-runtime-invoke.md`](docs/09-method-mono-runtime-invoke.md) | D Mono/托管运行时调用 + 进程内桥（与 ①② 互补） | Unity Mono 通用、**RPG Developer Bakin**（Yukar 框架） |
 | ⑩ | [`docs/10-method-memory-scan-lock.md`](docs/10-method-memory-scan-lock.md) | E 内存扫描+锁定（兜底法 + 锁定工程学 + 环回被拦排障） | 全引擎兜底；RM2k 锁定主力；原生引擎唯一通道 |
 | ⑪ | [`docs/11-method-interpreter-command-injection.md`](docs/11-method-interpreter-command-injection.md) | F 解释器指令注入（兼容运行时扩展命令） | **RM2k/2k3（主力）**；Wolf 事件指令部分适用 |
+| ⑫ | [`docs/12-method-manual-search-to-stable.md`](docs/12-method-manual-search-to-stable.md) | **从手动搜索到稳定指针链**：用户已手动 CE 搜到地址，通过单点重搜+计算推算其余地址，再用断点追踪固化（② 的快速变种） | Unity IL2CPP、原生 C/C++、结构体数据 |
 
 **要点速览**
 

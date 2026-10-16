@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="52">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>0</ID>
+      <Description>"钱"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>"GameAssembly.dll"+32DB080</Address>
+      <Offsets>
+        <Offset>34</Offset>
+        <Offset>10</Offset>
+        <Offset>B8</Offset>
+      </Offsets>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"HP"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>"GameAssembly.dll"+32DB080</Address>
+      <Offsets>
+        <Offset>38</Offset>
+        <Offset>10</Offset>
+        <Offset>B8</Offset>
+      </Offsets>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>2</ID>
+      <Description>"体力"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>"GameAssembly.dll"+32DB080</Address>
+      <Offsets>
+        <Offset>3C</Offset>
+        <Offset>10</Offset>
+        <Offset>B8</Offset>
+      </Offsets>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>3</ID>
+      <Description>"考核"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>"GameAssembly.dll"+32DB080</Address>
+      <Offsets>
+        <Offset>C0</Offset>
+        <Offset>10</Offset>
+        <Offset>B8</Offset>
+      </Offsets>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>4</ID>
+      <Description>"治安"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>"GameAssembly.dll"+32DB080</Address>
+      <Offsets>
+        <Offset>D8</Offset>
+        <Offset>10</Offset>
+        <Offset>B8</Offset>
+      </Offsets>
+    </CheatEntry>
+  </CheatEntries>
+  <UserdefinedSymbols/>
+</CheatTable>
